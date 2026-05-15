@@ -1,26 +1,36 @@
 import whisper
 import torchaudio
-# pyannote expects torchaudio.AudioMetaData; newer torchaudio exposes it only via _torchaudio
-if not hasattr(torchaudio, "AudioMetaData"):  # guard for newer torchaudio versions
-    from torchaudio._torchaudio import AudioMetaData as _AudioMetaData  # type: ignore
-    torchaudio.AudioMetaData = _AudioMetaData  # type: ignore[attr-defined]
-from pyannote.audio import Pipeline
-from pyannote.audio.pipelines.utils.hook import ProgressHook
+import logging
 import torch
 import os
 import numpy as np
 import librosa
 import time
-from datetime import datetime
 import tempfile
-import logging
+import soundfile as sf
+from datetime import datetime
 from typing import Dict, List, Any, Optional, Callable
 from pydub import AudioSegment
-import soundfile as sf
 from pathlib import Path
+
+# Pyannote imports
+from pyannote.audio import Pipeline
+from pyannote.audio.pipelines.utils.hook import ProgressHook
+from pyannote.core import Segment, Timeline, Annotation
+
+# Project imports
+from services.audio_converter import needs_conversion, convert_audio_to_wav
 
 # Configure logging
 logger = logging.getLogger("audio-processor")
+
+# pyannote expects torchaudio.AudioMetaData; newer torchaudio exposes it only via _torchaudio
+if not hasattr(torchaudio, "AudioMetaData"):  # guard for newer torchaudio versions
+    try:
+        from torchaudio._torchaudio import AudioMetaData as _AudioMetaData  # type: ignore
+        torchaudio.AudioMetaData = _AudioMetaData  # type: ignore[attr-defined]
+    except ImportError:
+        logger.warning("Could not monkey-patch torchaudio.AudioMetaData. Pyannote might encounter issues.")
 
 # Enable for better performance if using CUDA
 if torch.cuda.is_available():
@@ -256,17 +266,15 @@ def diarize_audio(audio_file: str) -> Any:
     Returns:
         Diarization result
     """
-    from services.audio_converter import is_mp3_file, convert_audio_to_wav
-
     logger.info(f"Starting diarization for file: {audio_file}")
 
     # Track if we create a temporary file that needs cleanup
     temp_file = None
 
     try:
-        # Convert MP3 to WAV if needed
-        if is_mp3_file(audio_file):
-            logger.info(f"Converting MP3 file to WAV before diarization: {audio_file}")
+        # Convert to WAV if needed
+        if needs_conversion(audio_file):
+            logger.info(f"Converting file to WAV before diarization: {audio_file}")
             temp_file = convert_audio_to_wav(audio_file)
             logger.info(f"Using converted file for diarization: {temp_file}")
             audio_file_to_process = temp_file
@@ -294,9 +302,6 @@ def diarize_audio(audio_file: str) -> Any:
 
     except Exception as e:
         logger.error(f"Diarization error: {str(e)}")
-
-        # Fall back to simpler diarization approach
-        from pyannote.core import Segment, Annotation
 
         logger.warning("Creating fallback diarization result")
         annotation = Annotation()
@@ -337,9 +342,6 @@ def create_fallback_diarization(audio_file: str) -> Any:
     logger.warning(f"Creating fallback diarization for {audio_file}")
 
     try:
-        # Import pyannote core for annotation objects
-        from pyannote.core import Segment, Annotation
-
         # Create a simple annotation with just one speaker if we can't process properly
         annotation = Annotation()
 
@@ -362,7 +364,6 @@ def create_fallback_diarization(audio_file: str) -> Any:
         logger.error(f"Fallback diarization failed: {str(e)}")
 
         # If all else fails, create an extremely minimal annotation
-        from pyannote.core import Segment, Annotation
         annotation = Annotation()
         segment = Segment(0, 300)  # Assume 5 minutes
         annotation[segment] = "SPEAKER_00"
@@ -391,8 +392,6 @@ def fallback_diarization(audio_file: str) -> Any:
 
         # Create a mock diarization result
         # This is a simplified version that mimics pyannote.audio's format
-        from pyannote.core import Segment, Timeline, Annotation
-
         # Create an annotation to hold our segments
         annotation = Annotation()
 
@@ -420,8 +419,6 @@ def fallback_diarization(audio_file: str) -> Any:
         logger.error(f"Fallback diarization failed: {str(e)}")
 
         # Create an extremely simple mock result with just one speaker
-        from pyannote.core import Segment, Annotation
-
         annotation = Annotation()
 
         # Just create one segment for the entire audio
@@ -447,6 +444,10 @@ def format_conversation(diarization_result, transcription_segments):
     """
     conversation_data = []
 
+    # Pyannote 4 returns a DiarizeOutput object, older versions return Annotation directly
+    if hasattr(diarization_result, "speaker_diarization"):
+        diarization_result = diarization_result.speaker_diarization
+        
     # Sort diarization turns and transcription segments by start time
     diarization_turns = sorted(diarization_result.itertracks(yield_label=True), key=lambda x: x[0].start)
     transcription_segments = sorted(transcription_segments, key=lambda x: x["start"])
@@ -538,7 +539,15 @@ def process_audio_file(audio_file_path: str, language: Optional[str] = None) -> 
 
     try:
         start_total = time.time()
-
+        original_file_path = audio_file_path
+        if needs_conversion(audio_file_path):
+            logger.info(f"Converting audio to WAV format before processing: {audio_file_path}")
+            try:
+                audio_file_path = convert_audio_to_wav(audio_file_path)
+            except Exception as e:
+                logger.error(f"Failed to convert audio: {str(e)}")
+                # Continue with original and hope librosa handles it via ffmpeg fallback
+        
         # Transcribe with timing
         step_start = time.time()
         transcription_result = transcribe_audio(audio_file_path, language)
@@ -662,7 +671,12 @@ def process_audio_file(audio_file_path: str, language: Optional[str] = None) -> 
         # Add to metrics
         if speaker_metrics:
             metrics['speaker_confidence_metrics'] = speaker_metrics
-
+        # Clean up the converted file if we created one
+        if 'original_file_path' in locals() and original_file_path != audio_file_path and os.path.exists(audio_file_path):
+            try:
+                os.unlink(audio_file_path)
+            except:
+                pass
         return metrics
 
     except Exception as e:
