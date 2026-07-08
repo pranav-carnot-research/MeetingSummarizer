@@ -78,5 +78,51 @@ class TestTextService(unittest.TestCase):
         seconds = parse_timestamp(timestamp)
         self.assertIsNone(seconds)
 
+    def test_deduplicate_actions_dicts(self):
+        from services.text_service import deduplicate_actions
+        
+        actions = [
+            {"action": "set up the web socket connection wrapper", "assignee": "Speaker 1", "due_date": "Friday", "priority": "high"},
+            {"action": "Speaker 1 to build websocket connection wrapper", "assignee": "Speaker 1", "due_date": "Not specified", "priority": "medium"},
+            {"action": "deploy app to staging environment", "assignee": "Speaker 2", "due_date": "Monday", "priority": "high"},
+            {"action": "deploying the application to staging", "assignee": "Speaker 2", "due_date": "Monday", "priority": "high"},
+            {"action": "review database indexing schema", "assignee": "Speaker 1", "due_date": "Not specified", "priority": "low"}
+        ]
+        
+        deduped = deduplicate_actions(actions)
+        
+        # Verify count: should be 3 unique items
+        self.assertEqual(len(deduped), 3)
+        
+        # Check that we kept unique tasks
+        actions_list = [item["action"] for item in deduped]
+        self.assertIn("set up the web socket connection wrapper", actions_list)
+        self.assertIn("deploy app to staging environment", actions_list)
+        self.assertIn("review database indexing schema", actions_list)
+
+    def test_deduplicate_actions_objects(self):
+        from services.text_service import deduplicate_actions
+        
+        class DummyActionItem:
+            def __init__(self, action, assignee):
+                self.action = action
+                self.assignee = assignee
+        
+        actions = [
+            DummyActionItem("configure postgres db instance", "Alice"),
+            DummyActionItem("configuring the postgres database", "Alice"),
+            DummyActionItem("configure postgres db instance", "Bob"), # Different assignee
+            DummyActionItem("write documentation", "Alice")
+        ]
+        
+        deduped = deduplicate_actions(actions)
+        
+        # Verify count: should be 3 items (the first Alice db task, the Bob db task, and the Alice doc task)
+        self.assertEqual(len(deduped), 3)
+        self.assertEqual(deduped[0].action, "configure postgres db instance")
+        self.assertEqual(deduped[0].assignee, "Alice")
+        self.assertEqual(deduped[1].assignee, "Bob")
+        self.assertEqual(deduped[2].action, "write documentation")
+
 if __name__ == '__main__':
     unittest.main()

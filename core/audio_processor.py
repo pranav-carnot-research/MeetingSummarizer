@@ -26,6 +26,10 @@ from pydub import AudioSegment
 import soundfile as sf
 from pathlib import Path
 
+# Global caches for models
+_whisper_cache = {}
+_pyannote_cache = {}
+
 # Enable for better performance if using CUDA
 if torch.cuda.is_available():
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -78,10 +82,14 @@ def transcribe_audio(audio_file: str, language: Optional[str] = None) -> Dict[st
         audio_file: Path to the audio file
         language: Optional language code (e.g., 'hi' for Hindi, None for auto-detection)
     """
-    logger.info(f"Transcribing audio file {audio_file} with language={language}")
-
-    # Use a lighter model to avoid multi‑GB download and long CPU inference
-    model = whisper.load_model("small")
+    # Use cached model if available to avoid reloading from disk
+    model_size = "small"
+    if model_size not in _whisper_cache:
+        logger.info(f"Loading Whisper model '{model_size}' from disk...")
+        _whisper_cache[model_size] = whisper.load_model(model_size)
+    else:
+        logger.info(f"Using cached Whisper model '{model_size}'")
+    model = _whisper_cache[model_size]
 
     # Load audio with librosa
     audio = librosa.load(audio_file, sr=16000)[0]  # Whisper requires 16kHz sample rate
@@ -283,12 +291,18 @@ def diarize_audio(audio_file: str) -> Any:
             "./models/speaker-diarization-3.1"
         )
 
-        logger.info(f"Loading diarization pipeline from local path: {model_dir}")
         config_path = Path(model_dir) / "config.yaml"
-        diarization_pipeline = Pipeline.from_pretrained(config_path)
-
-        # Use GPU if available
-        diarization_pipeline.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        
+        # Use cached pipeline if available
+        cache_key = str(config_path)
+        if cache_key not in _pyannote_cache:
+            logger.info(f"Loading diarization pipeline from local path: {model_dir}")
+            pipeline = Pipeline.from_pretrained(config_path)
+            pipeline.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+            _pyannote_cache[cache_key] = pipeline
+        else:
+            logger.info("Using cached diarization pipeline")
+        diarization_pipeline = _pyannote_cache[cache_key]
 
         # Process with progress hook
         with ProgressHook() as hook:

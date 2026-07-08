@@ -7,3 +7,25 @@ job_results
 audCon.py
 tests
 mainn.py
+# Logs
+*.log
+processing_log.txt
+
+# Generated reports
+*.pdf
+*.docx
+
+# Report conversion/generation scripts
+convert_md_to_docx.py
+convert_to_pdf.py
+generate_report.py
+
+# Local testing and analysis files
+performance_test_suite.py
+test_scenarios.py
+
+# Local documentation/reports
+action_items_optimizations_report.md
+meeting_summarizer_architecture.md
+meeting_summarizer_architecture_report.md
+unit_testing_report.md

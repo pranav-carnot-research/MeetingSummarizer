@@ -11,7 +11,7 @@ from core.audio_processor import process_audio_file
 from core.speaker_summarizer import generate_speaker_summaries
 from core.long_recording_processor import process_long_audio
 from core.summarize_long_transcripts import summarize_long_meeting
-from core.realtime_processor import RealTimeTranscriber
+from core.realtime_processor import RealTimeTranscriber, RealTimeDiarizer
 
 # Check for OpenAI API key
 #if not os.environ.get("OPENAI_API_KEY"):
@@ -123,6 +123,120 @@ def display_meeting_summary():
     if not result:
         st.info("No meeting summary available yet.")
         return
+
+    # Render Download buttons at the top in a nice row!
+    st.write("### 📥 Export Reports")
+    dl_col1, dl_col2, dl_col3 = st.columns(3)
+    
+    # 1. JSON Report
+    with dl_col1:
+        st.download_button(
+            label="📄 Download JSON Summary",
+            data=json.dumps({
+                "meeting_summary": result.get("meeting_summary", {}),
+                "action_items": result.get("action_items", []),
+                "speaker_summaries": st.session_state.get("speaker_summaries", {}),
+                "language": st.session_state.get("detected_language", "en"),
+                "metadata": result.get("metadata", {})
+            }, indent=2),
+            file_name="meeting_summary.json",
+            mime="application/json",
+            use_container_width=True
+        )
+        
+    # 2. Verbatim Transcript
+    transcript_content = st.session_state.get("transcript_content", "")
+    with dl_col2:
+        st.download_button(
+            label="📝 Download Transcript (TXT)",
+            data=transcript_content,
+            file_name="meeting_transcript.txt",
+            mime="text/plain",
+            disabled=not transcript_content,
+            use_container_width=True
+        )
+        
+    # 3. Full Meeting Report (TXT)
+    try:
+        summary_txt_parts = []
+        summary_txt_parts.append("========================================")
+        summary_txt_parts.append("           MEETING MINUTES REPORT       ")
+        summary_txt_parts.append("========================================")
+        summary_txt_parts.append(f"Language: {st.session_state.get('detected_language', 'en')}")
+        
+        summary_txt_parts.append("\n----------------------------------------")
+        summary_txt_parts.append("1. MEETING SUMMARY")
+        summary_txt_parts.append("----------------------------------------")
+        if "meeting_summary" in result and "summary" in result["meeting_summary"]:
+            summary_txt_parts.append(result["meeting_summary"]["summary"])
+        else:
+            summary_txt_parts.append("No summary available.")
+        
+        summary_txt_parts.append("\n----------------------------------------")
+        summary_txt_parts.append("2. KEY POINTS")
+        summary_txt_parts.append("----------------------------------------")
+        if "meeting_summary" in result and "key_points" in result["meeting_summary"] and result["meeting_summary"]["key_points"]:
+            for pt in result["meeting_summary"]["key_points"]:
+                summary_txt_parts.append(f"- {pt}")
+        else:
+            summary_txt_parts.append("No key points available.")
+        
+        summary_txt_parts.append("\n----------------------------------------")
+        summary_txt_parts.append("3. DECISIONS MADE")
+        summary_txt_parts.append("----------------------------------------")
+        if "meeting_summary" in result and "decisions" in result["meeting_summary"] and result["meeting_summary"]["decisions"]:
+            for dec in result["meeting_summary"]["decisions"]:
+                summary_txt_parts.append(f"- {dec}")
+        else:
+            summary_txt_parts.append("No decisions recorded.")
+                
+        summary_txt_parts.append("\n----------------------------------------")
+        summary_txt_parts.append("4. ACTION ITEMS")
+        summary_txt_parts.append("----------------------------------------")
+        if "action_items" in result and result["action_items"]:
+            for item in result["action_items"]:
+                summary_txt_parts.append(f"📌 Action: {item.get('action')}")
+                summary_txt_parts.append(f"   Assignee: {item.get('assignee', 'Unassigned')}")
+                summary_txt_parts.append(f"   Due Date: {item.get('due_date', 'Not specified')}")
+                summary_txt_parts.append(f"   Priority: {item.get('priority', 'medium').upper()}")
+                summary_txt_parts.append("")
+        else:
+            summary_txt_parts.append("No action items assigned.")
+                
+        speaker_summaries = st.session_state.get("speaker_summaries")
+        if speaker_summaries:
+            summary_txt_parts.append("\n----------------------------------------")
+            summary_txt_parts.append("5. SPEAKER SUMMARIES & CONTRIBUTIONS")
+            summary_txt_parts.append("----------------------------------------")
+            for spk, spk_sum in speaker_summaries.items():
+                summary_txt_parts.append(f"👤 {spk}:")
+                summary_txt_parts.append(f"   Brief: {spk_sum.get('brief_summary', '')}")
+                if spk_sum.get("key_contributions"):
+                    summary_txt_parts.append("   Key Contributions:")
+                    for contr in spk_sum.get("key_contributions", []):
+                        summary_txt_parts.append(f"     - {contr}")
+                summary_txt_parts.append("")
+                
+        summary_txt_parts.append("\n----------------------------------------")
+        summary_txt_parts.append("6. VERBATIM TRANSCRIPT")
+        summary_txt_parts.append("----------------------------------------")
+        summary_txt_parts.append(transcript_content)
+        
+        full_meeting_minutes_txt = "\n".join(summary_txt_parts)
+    except Exception as e:
+        full_meeting_minutes_txt = "Error compiling report."
+        logger.error(f"Error compiling full report text: {e}")
+
+    with dl_col3:
+        st.download_button(
+            label="📥 Download Full Report (TXT)",
+            data=full_meeting_minutes_txt,
+            file_name="meeting_report.txt",
+            mime="text/plain",
+            use_container_width=True
+        )
+        
+    st.write("---")
 
     col1, col2 = st.columns(2)
 
@@ -401,42 +515,168 @@ elif input_method == "Real-Time Audio":
         st.session_state.audio_processing_complete = False
         st.session_state.rt_trigger_process = False
         st.session_state.recorded_audio_path = None
+        st.session_state.diarizer_error = None
+        
+        # Start diarizer first (gracefully fallback on error)
+        diarizer = None
         try:
-            st.session_state.realtime_transcriber = RealTimeTranscriber()
-            st.session_state.realtime_transcriber.start()
+            diarizer = RealTimeDiarizer()
+            with st.spinner("Loading speaker diarization models (first time only)…"):
+                diarizer.load_models()
+            diarizer.start()
+            st.session_state.realtime_diarizer = diarizer
+        except Exception as e:
+            st.session_state.diarizer_error = str(e)
+            st.session_state.realtime_diarizer = None
+
+        # Start transcriber and link to diarizer if available
+        try:
+            transcriber = RealTimeTranscriber()
+            if diarizer:
+                transcriber.diarizer = diarizer
+            transcriber.start()
+            st.session_state.realtime_transcriber = transcriber
             st.rerun()
         except Exception as e:
             st.error(f"Failed to start recording: {e}")
+            if diarizer:
+                try:
+                    diarizer.stop()
+                except Exception:
+                    pass
+            st.session_state.realtime_diarizer = None
+            st.session_state.realtime_transcriber = None
             st.session_state.is_recording = False
+            st.rerun()
             
     if stop_btn and st.session_state.is_recording:
         st.session_state.is_recording = False
-        if st.session_state.realtime_transcriber:
-            st.session_state.realtime_transcriber.stop()
-            # Save audio to temp file
-            tmp_dir = tempfile.gettempdir()
-            rt_audio_path = os.path.join(tmp_dir, f"rt_recording_{int(time.time())}.wav")
-            if st.session_state.realtime_transcriber.save_full_audio(rt_audio_path):
+        
+        live_segments = []
+        diarizer = st.session_state.realtime_diarizer
+        transcriber = st.session_state.realtime_transcriber
+        
+        # 1. Extract live segments from diarizer if active
+        if diarizer and diarizer.is_running:
+            segments = diarizer.get_live_segments()
+            if segments:
+                for seg in segments:
+                    import re
+                    spk_match = re.search(r'Speaker\s+(\d+)', seg['speaker'])
+                    spk_num = spk_match.group(1) if spk_match else seg['speaker']
+                    live_segments.append({
+                        "speaker": spk_num,
+                        "text": seg['text'],
+                        "start_time_formatted": seg['timestamp'],
+                        "end_time_formatted": seg['timestamp']
+                    })
+                    
+        # 2. Fallback to raw transcriber text if no segments
+        if not live_segments and transcriber:
+            raw_text = transcriber.get_transcript()
+            if raw_text:
+                live_segments.append({
+                    "speaker": "1",
+                    "text": raw_text,
+                    "start_time_formatted": "00:00",
+                    "end_time_formatted": "00:00"
+                })
+                
+        # 3. Save live transcript text & metadata to session state
+        if live_segments:
+            st.session_state.audio_transcript = {
+                "transcript": live_segments,
+                "language": "en"  # Default to english for live mode
+            }
+            formatted_transcript = []
+            for seg in live_segments:
+                formatted_transcript.append(f"[{seg['start_time_formatted']}] Speaker {seg['speaker']}: {seg['text']}")
+            st.session_state.transcript_content = "\n".join(formatted_transcript)
+            st.session_state.audio_processing_complete = True
+            
+        # 4. Stop objects and save backup audio file
+        if transcriber:
+            transcriber.stop()
+            recordings_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recordings")
+            os.makedirs(recordings_dir, exist_ok=True)
+            rt_audio_path = os.path.join(recordings_dir, f"rt_recording_{int(time.time())}.wav")
+            if transcriber.save_full_audio(rt_audio_path):
                 st.session_state.recorded_audio_path = rt_audio_path
-                st.session_state.rt_trigger_process = True
             st.session_state.realtime_transcriber = None
+            
+        if diarizer:
+            diarizer.stop()
+            st.session_state.realtime_diarizer = None
+            
+        st.session_state.rt_trigger_process = False  # Disable auto-trigger offline processing
         st.rerun()
+
+    # Show diarizer error banner if models failed to load
+    if st.session_state.get("diarizer_error"):
+        st.warning(
+            f"⚠️ Speaker diarization could not start: {st.session_state.diarizer_error}. "
+            "Falling back to transcription-only mode."
+        )
 
     # The Live Transcript view
     st.write("### Live Transcript")
     
     @st.fragment(run_every=2)
     def live_transcript_view():
-        if st.session_state.is_recording and st.session_state.realtime_transcriber:
-            text = st.session_state.realtime_transcriber.get_transcript()
-            if text:
-                st.text_area("Listening...", value=text, height=200, disabled=True, key=f"rt_txt_{int(time.time())}")
-            else:
-                st.info("Listening... Speak into the microphone.")
+        diarizer: RealTimeDiarizer | None = st.session_state.get("realtime_diarizer")
+        transcriber: RealTimeTranscriber | None = st.session_state.get("realtime_transcriber")
+        is_rec = st.session_state.is_recording
+
+        if is_rec and (diarizer or transcriber):
+            # ── Always show raw Whisper text first ────────────────────────────
+            if transcriber:
+                raw_text = transcriber.get_transcript()
+                if raw_text:
+                    st.text_area(
+                        "🎙️ Live Transcription (Whisper)",
+                        value=raw_text,
+                        height=150,
+                        disabled=True,
+                        key="rt_raw_transcript",
+                    )
+                else:
+                    st.info("🎙️ Listening… Speak into the microphone.")
+
+            # ── Speaker-diarized view (appears once diarizer has segments) ───
+            if diarizer and diarizer.is_running:
+                segments = diarizer.get_live_segments()
+                if segments:
+                    st.write("**🔊 Speaker Labels**")
+                    color_map = {
+                        "🔵": "#4ea1f3", "🟠": "#f5a623", "🟢": "#5cb85c",
+                        "🔴": "#d9534f", "🟣": "#9b59b6", "🟡": "#f0e040",
+                        "⚪": "#cccccc", "🟤": "#a0522d",
+                    }
+                    html_parts = [
+                        "<div style='font-family:monospace; font-size:14px; "
+                        "background:#1e1e1e; color:#ddd; padding:12px; "
+                        "border-radius:8px; max-height:280px; overflow-y:auto;'>"
+                    ]
+                    for seg in segments:
+                        c = color_map.get(seg["color"], "#ddd")
+                        txt = seg["text"] if seg["text"] else "<i style='color:#888'>(speaking…)</i>"
+                        html_parts.append(
+                            f"<p style='margin:4px 0;'>"
+                            f"<span style='color:{c}; font-weight:bold;'>{seg['color']} {seg['speaker']}</span> "
+                            f"<span style='color:#888; font-size:12px;'>[{seg['timestamp']}]</span> {txt}"
+                            f"</p>"
+                        )
+                    html_parts.append("</div>")
+                    st.markdown("".join(html_parts), unsafe_allow_html=True)
+                    n_spk = len(diarizer._speaker_profiles)
+                    st.caption(f"Detected {n_spk} unique speaker(s) so far.")
+                else:
+                    st.caption("⏳ Speaker labels will appear after ~5 seconds of speech.")
+
         elif st.session_state.get("recorded_audio_path"):
-            st.success("Recording stopped. Audio saved successfully.")
+            st.success("✅ Recording stopped. Audio saved successfully.")
         else:
-            st.info("Click 'Start Listening' to begin.")
+            st.info("Click '🎙️ Start Listening' to begin.")
             
     live_transcript_view()
     
@@ -743,33 +983,6 @@ if submit_button:
                     st.error(f"Error generating speaker summaries: {str(e)}")
 
             # Add download buttons for JSON export and transcript
-            st.download_button(
-                label="Download Summary & Action Items (JSON)",
-                data=json.dumps({
-                    "meeting_summary": result["meeting_summary"],
-                    "action_items": result["action_items"],
-                    "speaker_summaries": st.session_state.speaker_summaries if st.session_state.speaker_summaries else {},
-                    "language": st.session_state.detected_language,
-                    "metadata": {
-                        "language": st.session_state.detected_language,
-                        "input_method": input_method,
-                        "participant_count": len(participants),
-                        "is_long_recording": st.session_state.is_long_recording
-                    }
-                }, indent=2),
-                file_name="meeting_summary.json",
-                mime="application/json"
-            )
-
-            # If this was from audio, offer the transcript download as well
-            if input_method in ["Upload Audio", "Real-Time Audio"]:
-                st.download_button(
-                    label="Download Transcript (TXT)",
-                    data=final_transcript,
-                    file_name="meeting_transcript.txt",
-                    mime="text/plain"
-                )
-
             # Reset to default tab
             st.session_state.current_tab = "Meeting Summary"
 

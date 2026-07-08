@@ -36,9 +36,9 @@ services:
       - WORKERS=1
       - LLM_PROVIDER=ollama
       - OLLAMA_API_BASE=http://ollama:11434
-      - OLLAMA_MODEL=mistral
-      - OLLAMA_SUMMARIZATION_MODEL=mistral  
-      - OLLAMA_MULTILINGUAL_MODEL=llama2
+      - OLLAMA_MODEL=qwen3.5:9b
+      - OLLAMA_SUMMARIZATION_MODEL=qwen3.5:9b
+      - OLLAMA_MULTILINGUAL_MODEL=qwen3.5:9b
     restart: unless-stopped
     depends_on:
       - ollama

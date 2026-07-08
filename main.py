@@ -88,7 +88,7 @@ class LanguageOption(BaseModel):
 @app.get("/", response_class=HTMLResponse)
 async def get_index(request: Request):
     """Serve the main application page"""
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request, "index.html")
 
 # Endpoint to get supported languages
 @app.get("/api/languages", response_model=List[LanguageOption])
@@ -188,6 +188,17 @@ async def process_audio_background(job_id: str, audio_path: str, language: Optio
                 update_job_status(job_id, JobStatus.PROCESSING, "Conversion failed, trying with original file", progress=10)
         else:
             audio_path_to_process = audio_path
+            
+        # Save a copy to a permanent recordings/ folder in the project root
+        import shutil
+        try:
+            recordings_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recordings")
+            os.makedirs(recordings_dir, exist_ok=True)
+            permanent_audio_path = os.path.join(recordings_dir, f"{job_id}.wav")
+            shutil.copy2(audio_path_to_process, permanent_audio_path)
+            logger.info(f"Saved copy of processed audio to: {permanent_audio_path}")
+        except Exception as e:
+            logger.error(f"Failed to copy processed audio to recordings/ directory: {str(e)}")
         
         # Check if we should use long processing or standard processing
         # For very short files, always use standard processing regardless of is_long_recording flag

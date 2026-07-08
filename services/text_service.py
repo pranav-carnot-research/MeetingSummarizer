@@ -25,7 +25,7 @@ def extract_participants(transcript: str) -> List[str]:
         participants.add(name.strip())
     
     # Pattern 2: Name: Text - works for English and transliterated Hindi
-    pattern2 = r'(?:^|\n)([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s*:'
+    pattern2 = r'(?:^|\n)[^\S\r\n]*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s*:'
     matches2 = re.findall(pattern2, transcript)
     for name in matches2:
         participants.add(name.strip())
@@ -145,3 +145,82 @@ def extract_timestamps_and_speakers(transcript: str) -> List[Dict[str, Any]]:
             })
     
     return segments
+
+def deduplicate_actions(actions: List[Any]) -> List[Any]:
+    """
+    Remove duplicate action items based on assignee and semantic word overlap.
+    Handles both dictionaries (from raw JSON parser) and Pydantic/object models.
+    """
+    def normalize_word(word):
+        synonyms = {
+            'db': 'database',
+            'websocket': 'web_socket',
+            'app': 'application',
+            'repo': 'repository',
+            'doc': 'documentation',
+            'docs': 'documentation',
+            'config': 'configure',
+            'configurations': 'configure',
+            'configuration': 'configure',
+            'setup': 'set_up',
+        }
+        word = synonyms.get(word, word)
+        
+        # Split compound synonyms to help matching (e.g. web_socket -> web, socket)
+        if '_' in word:
+            return word.split('_')
+        
+        if len(word) > 4:
+            return [word[:4]]
+        return [word]
+
+    deduplicated = []
+    stop_words = {'to', 'the', 'a', 'an', 'and', 'or', 'for', 'of', 'in', 'on', 'at', 'with', 'by', 'speaker', '1', '2', '3', '4', '5', '6', '7', '8', '9'}
+    
+    for item in actions:
+        is_dup = False
+        
+        # Extract action and assignee whether item is a dict or an object
+        if isinstance(item, dict):
+            action_text = item.get("action", "")
+            assignee = item.get("assignee", "Unassigned")
+        else:
+            action_text = getattr(item, "action", "")
+            assignee = getattr(item, "assignee", "Unassigned")
+            
+        if not action_text:
+            continue
+            
+        # Extract clean words, normalize them and filter stop words
+        clean_new = "".join(c for c in action_text.lower() if c.isalnum() or c.isspace()).split()
+        words_new = set()
+        for w in clean_new:
+            if w not in stop_words:
+                words_new.update(normalize_word(w))
+        
+        for existing in deduplicated:
+            if isinstance(existing, dict):
+                ex_action = existing.get("action", "")
+                ex_assignee = existing.get("assignee", "Unassigned")
+            else:
+                ex_action = getattr(existing, "action", "")
+                ex_assignee = getattr(existing, "assignee", "Unassigned")
+                
+            # Only compare items assigned to the same person (case insensitive)
+            if assignee.lower().strip() == ex_assignee.lower().strip():
+                clean_ex = "".join(c for c in ex_action.lower() if c.isalnum() or c.isspace()).split()
+                words_ex = set()
+                for w in clean_ex:
+                    if w not in stop_words:
+                        words_ex.update(normalize_word(w))
+                
+                if words_new and words_ex:
+                    intersection = words_new.intersection(words_ex)
+                    overlap = len(intersection) / min(len(words_new), len(words_ex))
+                    if overlap >= 0.50: # 50% key-word similarity threshold after normalization
+                        is_dup = True
+                        break
+        if not is_dup:
+            deduplicated.append(item)
+            
+    return deduplicated

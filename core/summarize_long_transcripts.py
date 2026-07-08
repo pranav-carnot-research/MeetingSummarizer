@@ -7,6 +7,7 @@ import json
 from config import settings  # Add settings import
 from core.prompts import CONTEXT_INSTRUCTION
 from services.llm_service import get_llm, get_ollama_llm
+from services.text_service import deduplicate_actions
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -15,7 +16,7 @@ logger = logging.getLogger("long_transcript_summarizer")
 def robust_json_parse(text):
     """
     Attempt to parse JSON from text, with fallback mechanisms for malformed JSON
-    
+    """
     # First, try direct JSON parsing
     try:
         # Try to extract JSON if it's embedded in markdown or other text
@@ -147,6 +148,7 @@ def format_transcript_chunk(chunk):
 def summarize_transcript_chunk(chunk_text, language=None, is_final=False, context=None):
     """
     Summarize a single transcript chunk with structured output
+    """
     
     # Define schema
     chunk_schema = {
@@ -180,6 +182,11 @@ def summarize_transcript_chunk(chunk_text, language=None, is_final=False, contex
   "action_items": [{{"action": "task", "assignee": "person"}}]
 }}
 
+CRITICAL RULES FOR ACTION ITEMS:
+- ONLY include actual, confirmed action items that the participants explicitly agreed to perform in this chunk.
+- EXCLUDE proposed ideas, suggestions, or tasks that were explicitly rejected, turned down, postponed, or decided against.
+- Deduplicate: Merge duplicate tasks mentioned multiple times in this chunk.
+
 {context_instruction}
 {language_instructions}"""
     else:
@@ -190,6 +197,11 @@ def summarize_transcript_chunk(chunk_text, language=None, is_final=False, contex
   "decisions": ["all decisions"],
   "action_items": [{{"action": "task", "assignee": "person", "due_date": "date"}}]
 }}
+
+CRITICAL RULES FOR ACTION ITEMS:
+- ONLY include actual, confirmed action items that the participants explicitly agreed to perform.
+- EXCLUDE proposed ideas, suggestions, or tasks that were explicitly rejected, turned down, postponed, or decided against in any part of the meeting.
+- Deduplicate: Merge similar or duplicate tasks across all sections into single, consolidated action items.
 
 {context_instruction}
 {language_instructions}"""
@@ -416,6 +428,9 @@ def summarize_long_meeting(transcript_data, language=None, progress_callback=Non
                 "due_date": "Not specified",
                 "priority": "medium"
             })
+            
+    # Deduplicate extracted action items
+    action_items = deduplicate_actions(action_items)
     
     final_result = {
         "meeting_summary": meeting_summary,

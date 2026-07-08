@@ -17,10 +17,10 @@ class Settings(BaseSettings):
     LLM_PROVIDER: str = "ollama"  # Options: "openai", "ollama"
     # Ollama Configuration
     OLLAMA_API_BASE: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "qwen2.5:7b"
-    OLLAMA_SUMMARIZATION_MODEL: str = "qwen2.5:7b"
-    OLLAMA_MULTILINGUAL_MODEL: str = "qwen2.5:7b"
-    OLLAMA_FALLBACK_MODEL: str = "qwen2.5:7b"
+    OLLAMA_MODEL: str = "mistral"
+    OLLAMA_SUMMARIZATION_MODEL: str = "mistral"
+    OLLAMA_MULTILINGUAL_MODEL: str = "mistral"
+    OLLAMA_FALLBACK_MODEL: str = "mistral"
 
     # Ollama Settings
     OLLAMA_USE_STRUCTURED_OUTPUT: bool = True

@@ -13,6 +13,7 @@ from config import settings
 from core.prompts import CONTEXT_INSTRUCTION, ANALYZE_SYSTEM_PROMPT, SUMMARIZE_SYSTEM_PROMPT, EXTRACT_ACTIONS_SYSTEM_PROMPT
 from services.llm_service import get_ollama_llm, get_llm as get_llm_service
 import langchain_core.output_parsers as langchain_parsers
+from services.text_service import deduplicate_actions
 
 # Configure logging for this module
 logger = logging.getLogger(__name__)
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 def robust_json_parse(text):
     """
     Attempt to parse JSON from text, with fallback mechanisms for malformed JSON
-    
+    """
     # First, try direct JSON parsing
     try:
         # Try to extract JSON if it's embedded in markdown or other text
@@ -501,6 +502,8 @@ Participants: {participants}
                     priority=item.get("priority", "medium")
                 ))
             
+            action_items = deduplicate_actions(action_items)
+            
             return {**state, "action_items": action_items, "current_step": "format_output"}
             
         except Exception as e:
@@ -510,69 +513,17 @@ Participants: {participants}
     return extract_actions_node
 
 def create_format_output_node(language=None):
-    """Create the format output node with language-specific instructions"""
-    language_instructions = ""
-    if language:
-        if language == "hi":
-            language_instructions = "Respond in Hindi language using Devanagari script."
-        elif language != "en":  # For languages other than English
-            language_instructions = f"Respond in {language} language."
-    
-    # 4. Format the final output
-    system_message = SystemMessage(content=f"""You are responsible for creating the final meeting summary and action item report.
-    Format the provided information into a well-structured, professional report.
-    
-    Your output should be a JSON object with two sections:
-    - meeting_summary: Contains the summary, key points, and decisions
-    - action_items: The list of action items with their details
-    
-    Format your response as JSON. DO NOT include explanatory text before or after the JSON.
-    {language_instructions}""")
-    
-    user_template = """Meeting Summary: {meeting_summary}
-    
-    Action Items: {action_items}"""
-    
+    """Create the format output node (Python-based direct dictionary format)"""
     def format_output_node(state: AgentState) -> AgentState:
-        """Format the final output with the meeting summary and action items."""
-        # Convert Pydantic models to dictionaries for the LLM
+        """Format the final output with the meeting summary and action items directly."""
         meeting_summary_dict = state["meeting_summary"].model_dump()
         action_items_dict = [item.model_dump() for item in state["action_items"]]
         
-        try:
-            # Create a one-time template
-            prompt = ChatPromptTemplate.from_messages([
-                system_message,
-                HumanMessage(content=user_template.format(
-                    meeting_summary=json.dumps(meeting_summary_dict, indent=2),
-                    action_items=json.dumps(action_items_dict, indent=2)
-                ))
-            ])
-            
-            llm = get_llm()
-            chain = prompt | llm | JsonOutputParser()
-            final_output = chain.invoke({})
-            return {**state, "final_output": final_output, "current_step": "complete"}
-        except Exception as e:
-            logger.warning(f"JSON parsing error in format_output_node: {e}. Attempting recovery...")
-            
-            try:
-                # Fall back to string output and robust parsing
-                str_chain = prompt | llm | StrOutputParser()
-                raw_response = str_chain.invoke({})
-                
-                # Use robust parsing
-                parsed_result = robust_json_parse(raw_response)
-                logger.info("Successfully recovered JSON structure for final output")
-                return {**state, "final_output": parsed_result, "current_step": "complete"}
-            except Exception as recovery_error:
-                logger.error(f"Recovery failed: {recovery_error}")
-                # Return a simple structure using the existing data
-                final_output = {
-                    "meeting_summary": meeting_summary_dict,
-                    "action_items": action_items_dict
-                }
-                return {**state, "final_output": final_output, "current_step": "complete"}
+        final_output = {
+            "meeting_summary": meeting_summary_dict,
+            "action_items": action_items_dict
+        }
+        return {**state, "final_output": final_output, "current_step": "complete"}
     
     return format_output_node
 
