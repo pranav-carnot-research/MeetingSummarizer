@@ -41,24 +41,68 @@ def extract_participants(transcript: str) -> List[str]:
         return sorted(list(participants))
     
     # If no participants found, try a more general approach for names
-    # This is a fallback method that might catch more names but could include false positives
-    words = re.findall(r'\b([A-Z][a-z]+)\b', transcript)
+    # This is a fallback method that might catch more names but could include false positives.
+    # We split by sentence boundaries (. ! ?) and newlines to find sentences/lines,
+    # then for each sentence/line we skip the first word to avoid capitalization due to grammar.
+    sentences = re.split(r'[.!?]|\n', transcript)
     potential_names = set()
     
-    for word in words:
-        # Skip common non-name words that start with capital letters
-        common_words = {"I", "We", "The", "This", "They", "Monday", "Tuesday", "Wednesday", 
-                       "Thursday", "Friday", "Saturday", "Sunday", "January", "February", 
-                       "March", "April", "May", "June", "July", "August", "September",
-                       "October", "November", "December", "Hello", "Hi", "Thanks", "Yes",
-                       "No", "Ok", "Okay", "Perfect", "Great", "Good", "Today", "Tomorrow"}
-        if word not in common_words and len(word) > 1:
-            potential_names.add(word)
-    
+    exclude_words = {
+        # Original common words
+        "I", "We", "The", "This", "They", "Monday", "Tuesday", "Wednesday", 
+        "Thursday", "Friday", "Saturday", "Sunday", "January", "February", 
+        "March", "April", "May", "June", "July", "August", "September",
+        "October", "November", "December", "Hello", "Hi", "Thanks", "Yes",
+        "No", "Ok", "Okay", "Perfect", "Great", "Good", "Today", "Tomorrow",
+        # English pronouns, prepositions, conjunctions, and common sentence starters
+        "Actually", "Basically", "Obviously", "Please", "Let", "Lets", "Why", "How", 
+        "Who", "What", "Where", "When", "Which", "Whose", "Whatever", "Whoever", 
+        "Yeah", "Not", "So", "But", "And", "Or", "For", "With", "Without", "About", 
+        "Above", "Below", "After", "Before", "During", "Under", "Over", "Through", 
+        "Between", "Among", "Against", "Into", "Onto", "Upon", "Out", "From", "To", 
+        "By", "At", "In", "On", "Of", "He", "She", "It", "Them", "Their", "Theirs", 
+        "Him", "Her", "Hers", "His", "Its", "Your", "Yours", "My", "Mine", "Our", 
+        "Ours", "Us", "Me", "You", "Yourself", "Themselves", "Ourselves", "Myself", 
+        "Himself", "Herself", "Itself", "Someone", "Somebody", "Something", "Anyone", 
+        "Anybody", "Anything", "Everyone", "Everybody", "Everything", "Nothing", "None",
+        # Common verbs, helping verbs, and modals
+        "Am", "Is", "Are", "Was", "Were", "Be", "Been", "Being", "Have", "Has", "Had", 
+        "Do", "Does", "Did", "Can", "Could", "Shall", "Should", "Will", "Would", "May", 
+        "Might", "Must", "Get", "Got", "Go", "Went", "Make", "Made", "Take", "Took",
+        # Adverbs, adjectives, and other fillers
+        "Speaker", "Anyway", "Anyways", "Generally", "Specifically", "Normally", 
+        "Usually", "Sometimes", "Always", "Never", "Often", "Seldom", "Rarely", 
+        "Maybe", "Perhaps", "Probably", "Definitely", "Absolutely", "Certainly", 
+        "Sure", "Surely", "Indeed", "Exactly", "Really", "Right", "Wrong", "True", 
+        "False", "Alright", "Yep", "Naw", "Nope", "Design", "Earlier", "Every", 
+        "Just", "Like", "Many", "Now", "Nowadays", "Oh", "One", "Recent", "Senior", 
+        "Technically", "That", "Then", "There", "Two", "Using", "Whether", "Another",
+        # Project/Tech stack specific terms
+        "Langchain", "Langra", "Ollama", "Whisper", "Pyannote", "Fastapi", "Streamlit", 
+        "Uvicorn", "Python", "Markdown", "Github", "Docker", "Api", "Llm", "App",
+        "Karma"
+    }
+
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        # Split sentence into words, keeping punctuation-free tokens
+        words = re.findall(r'\b\w+\b', sentence)
+        if len(words) <= 1:
+            continue
+        # Ignore the first word as it's capitalized for grammar
+        candidate_words = words[1:]
+        for word in candidate_words:
+            # Match words starting with a capital letter followed by lowercase letters
+            if re.match(r'^[A-Z][a-z]+$', word):
+                if word not in exclude_words:
+                    potential_names.add(word)
+
     # Only use this method if the others failed and we found potential names
     if not participants and potential_names:
         return sorted(list(potential_names))
-    
+
     return sorted(list(participants))
 
 def parse_timestamp(timestamp_str: str) -> Optional[float]:
