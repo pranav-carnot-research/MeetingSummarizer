@@ -16,10 +16,11 @@ ffmpeg-python>=0.2.0
 sounddevice>=0.4.6
 numpy>=1.24.0
 
-# Language models and processing - updated for Ollama
+# Language models and processing
 langchain>=0.0.267
 langchain-community>=0.0.10  # Contains Ollama integration
 langchain-ollama
+langchain-groq>=0.1.0
 langgraph>=0.0.10
 langchain-text-splitters>=0.0.1
 langchain-core>=0.1.0

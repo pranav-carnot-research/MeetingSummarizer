@@ -14,6 +14,20 @@ from core.prompts import CONTEXT_INSTRUCTION, ANALYZE_SYSTEM_PROMPT, SUMMARIZE_S
 from services.llm_service import get_ollama_llm, get_llm as get_llm_service
 import langchain_core.output_parsers as langchain_parsers
 from services.text_service import deduplicate_actions
+from services.json_utils import parse_llm_json_object, parse_llm_json_array
+
+# Phase 1 & 2 agent imports
+from core.critique_agents import (
+    create_critique_summary_node,
+    create_critique_actions_node,
+    create_refinement_referee_node,
+    fanin_router,
+)
+from core.task_planner import (
+    create_task_decomposer_node,
+    create_format_task_output_node,
+    Task,
+)
 
 # Configure logging for this module
 logger = logging.getLogger(__name__)
@@ -137,15 +151,35 @@ class MeetingSummary(BaseModel):
 
 class AgentState(TypedDict):
     """The state of our meeting summarizer agent."""
+    # ── Core inputs ───────────────────────────────────────────────────────────
     transcript: str
     participants: List[str]
     language: Optional[str]
     context: Optional[str]
-    current_step: Literal["initialization", "analyze", "summarize", "extract_actions", "format_output", "complete"]
+    current_step: Literal[
+        "initialization", "analyze", "summarize", "extract_actions",
+        "format_output",
+        # Phase 1: critique & refinement
+        "critique_summary", "critique_actions", "refinement_referee",
+        # Phase 2: task decomposer
+        "task_decomposer", "format_task_output",
+        "complete"
+    ]
+
+    # ── Phase 0: original pipeline outputs ───────────────────────────────────
     analysis: Dict
     meeting_summary: MeetingSummary
     action_items: List[ActionItem]
     final_output: Dict
+
+    # ── Phase 1: critique & refinement ───────────────────────────────────────
+    critique_summary: Optional[Dict]   # output of critique_summary_agent
+    critique_actions: Optional[Dict]   # output of critique_actions_agent
+    critique_complete: int             # fanin counter (incremented by each critique node)
+    refined_output: Optional[Dict]     # final refined summary+actions from referee
+
+    # ── Phase 2: task plan ───────────────────────────────────────────────────
+    task_plan: Optional[List]          # List[Task] or List[dict] from task_decomposer
 
 # Initialize our LLM
 def get_llm():
@@ -426,8 +460,11 @@ Participants: {participants}
                 summary_data = json.loads(response.content)
             else:
                 llm = get_llm()
-                chain = prompt | llm | JsonOutputParser()
-                summary_data = chain.invoke({})
+                chain = prompt | llm | StrOutputParser()
+                raw = chain.invoke({})
+                summary_data = parse_llm_json_object(raw)
+                if not summary_data:
+                    raise ValueError(f"Could not parse summary JSON from model output: {raw[:300]!r}")
             
             meeting_summary = MeetingSummary(
                 summary=summary_data["summary"],
@@ -490,8 +527,20 @@ Participants: {participants}
                 action_data = json.loads(response.content)
             else:
                 llm = get_llm()
-                chain = prompt | llm | JsonOutputParser()
-                action_data = chain.invoke({})
+                chain = prompt | llm | StrOutputParser()
+                raw = chain.invoke({})
+                action_data = parse_llm_json_array(raw)
+                if action_data is None:
+                    # Model may have returned an object with an array inside
+                    obj = parse_llm_json_object(raw)
+                    if obj:
+                        for key in ("action_items", "actions", "items"):
+                            if isinstance(obj.get(key), list):
+                                action_data = obj[key]
+                                break
+                if action_data is None:
+                    logger.warning(f"Could not parse action items from: {raw[:300]!r}")
+                    action_data = []
             
             action_items = []
             for item in action_data:
@@ -529,46 +578,87 @@ def create_format_output_node(language=None):
 
 # Define the workflow graph
 def create_meeting_summarizer_graph(language=None):
-    """Create the LangGraph workflow for meeting summarization with language support."""
-    # Initialize the graph
+    """Create the LangGraph workflow for meeting summarization with language support.
+    
+    Full pipeline (Phase 0 → 1 → 2):
+      analyze → summarize → extract_actions → format_output
+        → node_critique_summary → node_critique_actions   (sequential, fanin counter)
+        → node_refinement_referee                          (after both critiques)
+        → node_task_decomposer                             (Phase 2: rich task planning)
+        → node_format_task_output                          (terminal formatter)
+
+    NOTE: Node names use 'node_' prefix to avoid collision with AgentState keys
+    which have the same semantic names (LangGraph constraint).
+    """
     workflow = StateGraph(AgentState)
-    
-    # Add nodes with language-specific handlers
-    workflow.add_node("analyze", create_analyze_node(language))
-    workflow.add_node("summarize", create_summarize_node(language))
+
+    # ── Phase 0: original pipeline nodes ─────────────────────────────────────
+    workflow.add_node("analyze",         create_analyze_node(language))
+    workflow.add_node("summarize",       create_summarize_node(language))
     workflow.add_node("extract_actions", create_extract_actions_node(language))
-    workflow.add_node("format_output", create_format_output_node(language))
-    
-    # Define edges
-    workflow.add_edge("analyze", "summarize")
-    workflow.add_edge("summarize", "extract_actions")
+    workflow.add_node("format_output",   create_format_output_node(language))
+
+    # ── Phase 1: critique & refinement nodes ──────────────────────────────────
+    workflow.add_node("node_critique_summary",   create_critique_summary_node())
+    workflow.add_node("node_critique_actions",   create_critique_actions_node())
+    workflow.add_node("node_refinement_referee", create_refinement_referee_node())
+
+    # ── Phase 2: task decomposer nodes ───────────────────────────────────────
+    workflow.add_node("node_task_decomposer",    create_task_decomposer_node())
+    workflow.add_node("node_format_task_output", create_format_task_output_node())
+
+    # ── Phase 0 edges ─────────────────────────────────────────────────────────
+    workflow.add_edge("analyze",         "summarize")
+    workflow.add_edge("summarize",       "extract_actions")
     workflow.add_edge("extract_actions", "format_output")
-    workflow.add_edge("format_output", END)
-    
+
+    # ── Phase 1 edges: fanout from format_output ──────────────────────────────
+    # Both critique nodes run sequentially (LangGraph doesn't support true parallel
+    # by default; the fanin counter handles the logical synchronisation).
+    workflow.add_edge("format_output",          "node_critique_summary")
+    workflow.add_edge("node_critique_summary",  "node_critique_actions")
+
+    # After both critiques have updated the fanin counter, route to referee
+    workflow.add_conditional_edges(
+        "node_critique_actions",
+        fanin_router,
+        {
+            "referee": "node_refinement_referee",
+            "wait": "node_critique_actions",  # safety loop (should never trigger)
+        },
+    )
+
+    # ── Phase 2 edges ─────────────────────────────────────────────────────────
+    workflow.add_edge("node_refinement_referee", "node_task_decomposer")
+    workflow.add_edge("node_task_decomposer",    "node_format_task_output")
+    workflow.add_edge("node_format_task_output", END)
+
     # Set the entry point
     workflow.set_entry_point("analyze")
-    
-    # Compile the graph
+
     return workflow.compile()
 
 # Main function to run the meeting summarizer
 def summarize_meeting(transcript: str, participants: List[str], language: str = None, context: str = None):
-    """Run the meeting summarizer on a transcript and return the summary and action items."""
-    # Check for empty inputs
+    """Run the full agentic pipeline on a transcript.
+    
+    Returns a dict with:
+      - meeting_summary   : {summary, key_points, decisions}  (from refinement)
+      - action_items      : list of action dicts              (from refinement)
+      - task_plan         : list of rich Task dicts           (Phase 2)
+      - quality_score     : float 0-1 from refinement referee
+      - refinement_notes  : what the referee changed
+    """
     if not transcript or not transcript.strip():
         raise ValueError("Meeting transcript cannot be empty")
-    
+
     if not participants:
         raise ValueError("Participants list cannot be empty")
-    
-    # Clean the transcript
+
     transcript = transcript.strip()
-    
-    # Create the graph with language support
     graph = create_meeting_summarizer_graph(language)
-    
+
     try:
-        # Initialize the state
         initial_state = {
             "transcript": transcript,
             "participants": participants,
@@ -578,17 +668,23 @@ def summarize_meeting(transcript: str, participants: List[str], language: str = 
             "analysis": {},
             "meeting_summary": MeetingSummary(summary="", key_points=[], decisions=[]),
             "action_items": [],
-            "final_output": {}
+            "final_output": {},
+            # Phase 1 initial values
+            "critique_summary": None,
+            "critique_actions": None,
+            "critique_complete": 0,
+            "refined_output": None,
+            # Phase 2 initial values
+            "task_plan": None,
         }
-        
-        # Run the graph
+
         result = graph.invoke(initial_state)
-        
         return result["final_output"]
+
     except Exception as e:
-        # Provide meaningful error message
         logger.error(f"Error processing meeting: {str(e)}")
         raise Exception(f"Failed to summarize meeting: {str(e)}")
+
 
 
 # Example usage

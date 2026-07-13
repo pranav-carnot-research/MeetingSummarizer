@@ -461,6 +461,11 @@ async def summarize_background(
             "meeting_summary": result["meeting_summary"],
             "action_items": result["action_items"],
             "speaker_summaries": speaker_summaries,
+            # Phase 1: quality metadata from the refinement referee
+            "quality_score": result.get("quality_score"),
+            "refinement_notes": result.get("refinement_notes"),
+            # Phase 2: rich task plan from the task decomposer agent
+            "task_plan": result.get("task_plan", []),
             "metadata": {
                 "language": language,
                 "language_name": language_name,
