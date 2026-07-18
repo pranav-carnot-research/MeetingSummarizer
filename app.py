@@ -12,6 +12,13 @@ from core.speaker_summarizer import generate_speaker_summaries
 from core.long_recording_processor import process_long_audio
 from core.summarize_long_transcripts import summarize_long_meeting
 from core.realtime_processor import RealTimeTranscriber, RealTimeDiarizer
+from services.follow_up_agent import (
+    group_by_assignee,
+    draft_all_emails,
+    send_follow_up_emails,
+    smtp_config_is_valid,
+)
+from services.contact_book import prefill_roster, bulk_save
 
 # Check for OpenAI API key
 #if not os.environ.get("OPENAI_API_KEY"):
@@ -155,6 +162,13 @@ if 'recorded_audio_path' not in st.session_state:
     st.session_state.recorded_audio_path = None
 if 'rt_trigger_process' not in st.session_state:
     st.session_state.rt_trigger_process = False
+# Follow-up email state
+if 'followup_drafts' not in st.session_state:
+    st.session_state.followup_drafts = {}       # { assignee: email_body }
+if 'followup_roster' not in st.session_state:
+    st.session_state.followup_roster = {}       # { assignee: email_address }
+if 'followup_send_results' not in st.session_state:
+    st.session_state.followup_send_results = {} # { assignee: (success, msg) }
 
 # Function to update processing progress
 def update_progress(progress, status):
@@ -1055,6 +1069,205 @@ if st.session_state.meeting_result:
         display_meeting_summary()
     else:  # Speaker Summaries
         display_speaker_summaries()
+
+
+# ─────────────────────────────────────────────────────────────
+# Follow-up Email Panel
+# ─────────────────────────────────────────────────────────────
+if st.session_state.meeting_result:
+    result = st.session_state.meeting_result
+    action_items = result.get("action_items", [])
+    meeting_summary = result.get("meeting_summary", {})
+
+    # Only show panel if there are assigned action items
+    assignee_groups = group_by_assignee(action_items)
+    if assignee_groups:
+        st.write("---")
+        st.subheader("📧 Send Follow-up Emails")
+        st.caption(
+            "One personalised email per assignee — listing their specific action items "
+            "with meeting context. Preview and edit before sending."
+        )
+
+        # ── SMTP status banner ────────────────────────────────────────
+        smtp_ok, smtp_reason = smtp_config_is_valid()
+        if not smtp_ok:
+            st.warning(
+                f"⚠️ SMTP not configured: {smtp_reason}  \n"
+                "Fill in `SMTP_USER`, `SMTP_PASSWORD` (and optionally `SMTP_HOST`) "
+                "in your `.env.dev` file, then restart the app."
+            )
+
+        # ── Step 1: Roster — collect email addresses ──────────────────
+        st.markdown("**Step 1 — Enter email addresses for each assignee**")
+        st.caption("Known contacts are auto-filled. Changes are remembered for future meetings.")
+
+        # Pre-fill from contact book (runs once or when result changes)
+        if not st.session_state.followup_roster or set(st.session_state.followup_roster.keys()) != set(assignee_groups.keys()):
+            st.session_state.followup_roster = prefill_roster(list(assignee_groups.keys()))
+
+        updated_roster: dict = {}
+        for assignee in sorted(assignee_groups.keys()):
+            task_count = len(assignee_groups[assignee])
+            col_name, col_email = st.columns([2, 3])
+            with col_name:
+                st.markdown(f"**{assignee}** &nbsp; `{task_count} task{'s' if task_count > 1 else ''}`")
+            with col_email:
+                stored_email = st.session_state.followup_roster.get(assignee, "")
+                entered_email = st.text_input(
+                    label=f"Email for {assignee}",
+                    value=stored_email,
+                    placeholder="name@company.com",
+                    key=f"email_input_{assignee}",
+                    label_visibility="collapsed",
+                )
+                updated_roster[assignee] = entered_email
+
+        # Propagate: if multiple assignees share the first name, auto-fill
+        # (handles "Priya" appearing in two rows — user only types once)
+        first_name_to_email: dict = {}
+        for name, email in updated_roster.items():
+            if email:
+                first_name_to_email[name.split()[0].lower()] = email
+        for name in list(updated_roster.keys()):
+            if not updated_roster[name]:
+                first = name.split()[0].lower()
+                if first in first_name_to_email:
+                    updated_roster[name] = first_name_to_email[first]
+
+        st.session_state.followup_roster = updated_roster
+
+        # Sender display name
+        sender_name = st.text_input(
+            "Your name (shown in emails as the sender)",
+            value=os.getenv("SMTP_FROM_NAME", "Meeting Organiser"),
+            key="followup_sender_name",
+        )
+
+        st.write("")
+
+        # ── Step 2: Generate drafts ───────────────────────────────────
+        st.markdown("**Step 2 — Generate personalised email drafts**")
+        col_gen, col_clear = st.columns([2, 1])
+        with col_gen:
+            gen_btn = st.button(
+                "✍️ Generate Email Drafts",
+                key="gen_drafts_btn",
+                use_container_width=True,
+                type="primary",
+            )
+        with col_clear:
+            clear_btn = st.button(
+                "🗑 Clear Drafts",
+                key="clear_drafts_btn",
+                use_container_width=True,
+            )
+
+        if clear_btn:
+            st.session_state.followup_drafts = {}
+            st.session_state.followup_send_results = {}
+            st.rerun()
+
+        if gen_btn:
+            with st.spinner("Drafting emails with AI… this takes a few seconds."):
+                try:
+                    drafts = draft_all_emails(
+                        action_items,
+                        meeting_summary,
+                        sender_name=sender_name,
+                    )
+                    st.session_state.followup_drafts = drafts
+                    st.session_state.followup_send_results = {}
+                    st.success(f"✅ Drafted {len(drafts)} email(s)")
+                except Exception as e:
+                    st.error(f"Error generating drafts: {e}")
+
+        # ── Step 3: Preview & send ────────────────────────────────────
+        if st.session_state.followup_drafts:
+            st.write("")
+            st.markdown("**Step 3 — Preview, edit, and send**")
+
+            send_results = st.session_state.followup_send_results
+
+            for assignee, body in st.session_state.followup_drafts.items():
+                email_addr = st.session_state.followup_roster.get(assignee, "")
+                task_count = len(assignee_groups.get(assignee, []))
+
+                # Status badge
+                if assignee in send_results:
+                    ok, msg = send_results[assignee]
+                    badge = "✅ Sent" if ok else "❌ Failed"
+                else:
+                    badge = "📝 Draft"
+
+                label = f"{badge} — **{assignee}** ({task_count} task{'s' if task_count > 1 else ''})  `{email_addr or 'no email'}`"
+                with st.expander(label, expanded=(assignee not in send_results)):
+                    # Editable body
+                    edited_body = st.text_area(
+                        "Email body (edit before sending)",
+                        value=body,
+                        height=320,
+                        key=f"email_body_{assignee}",
+                    )
+                    # Update draft in place
+                    st.session_state.followup_drafts[assignee] = edited_body
+
+                    send_col, skip_col = st.columns([2, 1])
+                    with send_col:
+                        if st.button(
+                            f"📤 Send to {email_addr or 'N/A'}",
+                            key=f"send_btn_{assignee}",
+                            disabled=(not smtp_ok or not email_addr or "@" not in (email_addr or "")),
+                            use_container_width=True,
+                        ):
+                            with st.spinner(f"Sending to {email_addr}…"):
+                                from services.follow_up_agent import send_email
+                                success, msg = send_email(
+                                    to_address=email_addr,
+                                    subject="Action Items from Our Recent Meeting",
+                                    body=edited_body,
+                                )
+                            # Save email to contact book on successful send
+                            if success:
+                                bulk_save({assignee: email_addr})
+                            st.session_state.followup_send_results[assignee] = (success, msg)
+                            st.rerun()
+
+                    with skip_col:
+                        if assignee in send_results:
+                            ok, msg = send_results[assignee]
+                            if ok:
+                                st.success("Sent ✓")
+                            else:
+                                st.error(msg)
+
+            # ── Send all at once ──────────────────────────────────────
+            st.write("")
+            all_have_emails = all(
+                st.session_state.followup_roster.get(a, "") and
+                "@" in st.session_state.followup_roster.get(a, "")
+                for a in st.session_state.followup_drafts
+            )
+            if st.button(
+                "📤 Send All Emails",
+                key="send_all_btn",
+                disabled=(not smtp_ok or not all_have_emails),
+                type="primary",
+                use_container_width=False,
+            ):
+                with st.spinner("Sending all emails…"):
+                    results = send_follow_up_emails(
+                        roster=st.session_state.followup_roster,
+                        drafts=st.session_state.followup_drafts,
+                        meeting_title="Our Recent Meeting",
+                    )
+                    # Save successful contacts to book
+                    for a, (ok, _) in results.items():
+                        if ok:
+                            bulk_save({a: st.session_state.followup_roster[a]})
+                    st.session_state.followup_send_results = results
+                st.rerun()
+
 
 # Add sidebar with tips
 with st.sidebar:

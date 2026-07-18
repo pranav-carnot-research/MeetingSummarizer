@@ -10,7 +10,7 @@ from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from pydantic import BaseModel, Field, validator
 import logging
 from config import settings
-from core.prompts import CONTEXT_INSTRUCTION, ANALYZE_SYSTEM_PROMPT, SUMMARIZE_SYSTEM_PROMPT, EXTRACT_ACTIONS_SYSTEM_PROMPT
+from core.prompts import CONTEXT_INSTRUCTION, ANALYZE_SYSTEM_PROMPT, SUMMARIZE_SYSTEM_PROMPT, EXTRACT_ACTIONS_SYSTEM_PROMPT, SEQUENTIAL_SUMMARIZE_SYSTEM_PROMPT
 from services.llm_service import get_ollama_llm, get_llm as get_llm_service
 import langchain_core.output_parsers as langchain_parsers
 from services.text_service import deduplicate_actions
@@ -18,10 +18,9 @@ from services.json_utils import parse_llm_json_object, parse_llm_json_array
 
 # Phase 1 & 2 agent imports
 from core.critique_agents import (
-    create_critique_summary_node,
-    create_critique_actions_node,
+    create_nli_critique_node,
     create_refinement_referee_node,
-    fanin_router,
+    nli_router,
 )
 from core.task_planner import (
     create_task_decomposer_node,
@@ -160,7 +159,7 @@ class AgentState(TypedDict):
         "initialization", "analyze", "summarize", "extract_actions",
         "format_output",
         # Phase 1: critique & refinement
-        "critique_summary", "critique_actions", "refinement_referee",
+        "critique_summary", "critique_actions", "critique_nli", "refinement_referee",
         # Phase 2: task decomposer
         "task_decomposer", "format_task_output",
         "complete"
@@ -176,6 +175,7 @@ class AgentState(TypedDict):
     critique_summary: Optional[Dict]   # output of critique_summary_agent
     critique_actions: Optional[Dict]   # output of critique_actions_agent
     critique_complete: int             # fanin counter (incremented by each critique node)
+    nli_issues: Optional[List[Dict]]   # list of contradictions found by local NLI
     refined_output: Optional[Dict]     # final refined summary+actions from referee
 
     # ── Phase 2: task plan ───────────────────────────────────────────────────
@@ -414,136 +414,164 @@ def chunk_transcript(transcript, max_chunk_size=15000):  # Increased from 8000
             else:
                 current_chunk = para
     
-    if current_chunk:
-        chunks.append(current_chunk)
-    
     return chunks
 
-def create_summarize_node(language=None):
-    """Create the summarize node with simplified prompts"""
-    language_instructions = f"Output in {language} language." if language and language != "en" else ""
-    system_message = SystemMessage(content=SUMMARIZE_SYSTEM_PROMPT.format(language_instructions=language_instructions))
+def chunk_transcript_with_overlap(transcript: str, chunk_size: int = 4000, overlap_size: int = 800) -> List[str]:
+    """
+    Split a transcript into chunks of approximately chunk_size characters,
+    with an overlap of approximately overlap_size characters between adjacent chunks.
+    Preserves whole lines where possible to avoid cutting speaker turns in half.
+    """
+    if len(transcript) <= chunk_size:
+        return [transcript]
+        
+    lines = transcript.split('\n')
+    chunks = []
+    current_chunk_lines = []
+    current_chunk_len = 0
     
-    user_template = """Based on this analysis: {analysis}
-Transcript: {transcript}
-Participants: {participants}
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        line_len = len(line) + 1  # +1 for newline character
+        
+        # If adding this line stays within chunk_size, or it's the first line in the chunk
+        if current_chunk_len + line_len <= chunk_size or not current_chunk_lines:
+            current_chunk_lines.append(line)
+            current_chunk_len += line_len
+            i += 1
+        else:
+            # Finalize the current chunk
+            chunks.append("\n".join(current_chunk_lines))
+            
+            # Backtrack to compute the overlap lines
+            overlap_len = 0
+            overlap_lines = []
+            j = i - 1
+            while j >= 0:
+                overlap_line_len = len(lines[j]) + 1
+                # Include at least one line (the immediate predecessor) or as long as it's within the overlap budget
+                if not overlap_lines or (overlap_len + overlap_line_len <= overlap_size):
+                    overlap_lines.insert(0, lines[j])
+                    overlap_len += overlap_line_len
+                    j -= 1
+                else:
+                    break
+            
+            current_chunk_lines = overlap_lines
+            current_chunk_len = overlap_len
+            
+    if current_chunk_lines:
+        chunks.append("\n".join(current_chunk_lines))
+        
+    return chunks
 
+
+def create_summarize_node(language=None):
+    """Create the summarize node with sequential chunk-based prompts"""
+    language_instructions = f"Output in {language} language." if language and language != "en" else ""
+    system_message = SystemMessage(content=SEQUENTIAL_SUMMARIZE_SYSTEM_PROMPT.format(language_instructions=language_instructions))
+    
+    user_template = """GLOBAL SUMMARY SO FAR:
+{global_summary}
+
+NEXT TRANSCRIPT CHUNK (Continuation):
+{chunk}
+
+Participants: {participants}
 """ + CONTEXT_INSTRUCTION
     
     def summarize_node(state: AgentState) -> AgentState:
-        """Generate a concise summary of the meeting"""
+        """Generate a sequential summary and extract action items from the meeting transcript"""
         try:
-            summary_schema = {
+            transcript = state["transcript"]
+            participants = state["participants"]
+            context = state.get("context", "None provided.")
+            
+            # Chunk the transcript using our new function with overlap
+            chunks = chunk_transcript_with_overlap(transcript, chunk_size=4000, overlap_size=800)
+            logger.info(f"Summarizing transcript sequentially in {len(chunks)} chunks")
+            
+            # Initial empty global summary
+            global_summary = {
+                "summary": "",
+                "key_points": [],
+                "decisions": [],
+                "action_items": []
+            }
+            
+            sequential_summary_schema = {
                 "type": "object",
                 "properties": {
                     "summary": {"type": "string"},
                     "key_points": {"type": "array", "items": {"type": "string"}},
-                    "decisions": {"type": "array", "items": {"type": "string"}}
+                    "decisions": {"type": "array", "items": {"type": "string"}},
+                    "action_items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "action": {"type": "string"},
+                                "assignee": {"type": "string"},
+                                "due_date": {"type": "string"},
+                                "priority": {"type": "string", "enum": ["high", "medium", "low"]}
+                            },
+                            "required": ["action", "assignee", "due_date", "priority"]
+                        }
+                    }
                 },
-                "required": ["summary", "key_points", "decisions"]
+                "required": ["summary", "key_points", "decisions", "action_items"]
             }
             
-            prompt = ChatPromptTemplate.from_messages([
-                system_message,
-                HumanMessage(content=user_template.format(
-                    transcript=state["transcript"][:5000],
-                    analysis=json.dumps(state["analysis"]),
-                    participants=", ".join(state["participants"]),
-                    context=state.get("context", "None provided.")
-                ))
-            ])
-            
-            if settings.LLM_PROVIDER == "ollama" and settings.OLLAMA_USE_STRUCTURED_OUTPUT:
-                llm = get_ollama_llm(temperature=0.1, purpose="summarization", format_schema=summary_schema)
-                result = prompt | llm
-                response = result.invoke({})
-                summary_data = json.loads(response.content)
-            else:
-                llm = get_llm()
-                chain = prompt | llm | StrOutputParser()
-                raw = chain.invoke({})
-                summary_data = parse_llm_json_object(raw)
-                if not summary_data:
-                    raise ValueError(f"Could not parse summary JSON from model output: {raw[:300]!r}")
-            
-            meeting_summary = MeetingSummary(
-                summary=summary_data["summary"],
-                key_points=summary_data["key_points"],
-                decisions=summary_data["decisions"]
-            )
-            return {**state, "meeting_summary": meeting_summary, "current_step": "extract_actions"}
-            
-        except Exception as e:
-            logger.error(f"Error in summarize_node: {str(e)}")
-            meeting_summary = MeetingSummary(
-                summary="Error generating summary",
-                key_points=["Unable to extract key points"],
-                decisions=[]
-            )
-            return {**state, "meeting_summary": meeting_summary, "current_step": "extract_actions"}
-    
-    return summarize_node
-
-def create_extract_actions_node(language=None):
-    """Create the action extraction node with simplified prompts"""
-    language_instructions = f"Output in {language} language." if language and language != "en" else ""
-    system_message = SystemMessage(content=EXTRACT_ACTIONS_SYSTEM_PROMPT.format(language_instructions=language_instructions))
-    
-    user_template = """Find action items in: {transcript}
-Participants: {participants}
-
-""" + CONTEXT_INSTRUCTION
-    
-    def extract_actions_node(state: AgentState) -> AgentState:
-        """Extract action items from the meeting transcript"""
-        try:
-            actions_schema = {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "action": {"type": "string"},
-                        "assignee": {"type": "string"},
-                        "due_date": {"type": "string"},
-                        "priority": {"type": "string", "enum": ["high", "medium", "low"]}
-                    },
-                    "required": ["action", "assignee", "due_date", "priority"]
+            for i, chunk in enumerate(chunks):
+                logger.info(f"Processing chunk {i+1}/{len(chunks)}")
+                
+                # Format global summary for presentation in the prompt
+                if i == 0:
+                    global_summary_str = "No summary generated yet. This is the first chunk."
+                else:
+                    global_summary_str = json.dumps(global_summary, indent=2)
+                
+                prompt = ChatPromptTemplate.from_messages([
+                    system_message,
+                    HumanMessage(content=user_template.format(
+                        global_summary=global_summary_str,
+                        chunk=chunk,
+                        participants=", ".join(participants),
+                        context=context
+                    ))
+                ])
+                
+                if settings.LLM_PROVIDER == "ollama" and settings.OLLAMA_USE_STRUCTURED_OUTPUT:
+                    llm = get_ollama_llm(temperature=0.1, purpose="summarization", format_schema=sequential_summary_schema)
+                    result = prompt | llm
+                    response = result.invoke({})
+                    summary_data = json.loads(response.content)
+                else:
+                    llm = get_llm()
+                    chain = prompt | llm | StrOutputParser()
+                    raw = chain.invoke({})
+                    summary_data = parse_llm_json_object(raw)
+                    if not summary_data:
+                        raise ValueError(f"Could not parse sequential summary JSON from model output in chunk {i+1}: {raw[:300]!r}")
+                
+                # Update global_summary for the next iteration
+                global_summary = {
+                    "summary": summary_data.get("summary", ""),
+                    "key_points": summary_data.get("key_points", []),
+                    "decisions": summary_data.get("decisions", []),
+                    "action_items": summary_data.get("action_items", [])
                 }
-            }
             
-            prompt = ChatPromptTemplate.from_messages([
-                system_message,
-                HumanMessage(content=user_template.format(
-                    transcript=state["transcript"][:5000],
-                    participants=", ".join(state["participants"]),
-                    context=state.get("context", "None provided.")
-                ))
-            ])
-            
-            if settings.LLM_PROVIDER == "ollama" and settings.OLLAMA_USE_STRUCTURED_OUTPUT:
-                llm = get_ollama_llm(temperature=0.1, purpose="summarization", format_schema=actions_schema)
-                result = prompt | llm
-                response = result.invoke({})
-                action_data = json.loads(response.content)
-            else:
-                llm = get_llm()
-                chain = prompt | llm | StrOutputParser()
-                raw = chain.invoke({})
-                action_data = parse_llm_json_array(raw)
-                if action_data is None:
-                    # Model may have returned an object with an array inside
-                    obj = parse_llm_json_object(raw)
-                    if obj:
-                        for key in ("action_items", "actions", "items"):
-                            if isinstance(obj.get(key), list):
-                                action_data = obj[key]
-                                break
-                if action_data is None:
-                    logger.warning(f"Could not parse action items from: {raw[:300]!r}")
-                    action_data = []
+            # Post-process final global_summary
+            meeting_summary = MeetingSummary(
+                summary=global_summary["summary"],
+                key_points=global_summary["key_points"],
+                decisions=global_summary["decisions"]
+            )
             
             action_items = []
-            for item in action_data:
+            for item in global_summary["action_items"]:
                 action_items.append(ActionItem(
                     action=item.get("action", ""),
                     assignee=item.get("assignee", "Unassigned"),
@@ -553,12 +581,42 @@ Participants: {participants}
             
             action_items = deduplicate_actions(action_items)
             
-            return {**state, "action_items": action_items, "current_step": "format_output"}
+            return {
+                **state,
+                "meeting_summary": meeting_summary,
+                "action_items": action_items,
+                "current_step": "extract_actions"
+            }
             
+        except Exception as e:
+            logger.error(f"Error in summarize_node: {str(e)}")
+            meeting_summary = MeetingSummary(
+                summary="Error generating summary",
+                key_points=["Unable to extract key points"],
+                decisions=[]
+            )
+            return {
+                **state,
+                "meeting_summary": meeting_summary,
+                "action_items": [],
+                "current_step": "extract_actions"
+            }
+    
+    return summarize_node
+
+def create_extract_actions_node(language=None):
+    """Create the action extraction node (now a pass-through that returns the already extracted action items)"""
+    def extract_actions_node(state: AgentState) -> AgentState:
+        """Pass through action items from previous state, ensuring they are deduplicated"""
+        try:
+            action_items = state.get("action_items", [])
+            # Deduplicate just to be absolutely sure
+            action_items = deduplicate_actions(action_items)
+            return {**state, "action_items": action_items, "current_step": "format_output"}
         except Exception as e:
             logger.error(f"Error in extract_actions_node: {str(e)}")
             return {**state, "action_items": [], "current_step": "format_output"}
-    
+            
     return extract_actions_node
 
 def create_format_output_node(language=None):
@@ -599,9 +657,9 @@ def create_meeting_summarizer_graph(language=None):
     workflow.add_node("format_output",   create_format_output_node(language))
 
     # ── Phase 1: critique & refinement nodes ──────────────────────────────────
-    workflow.add_node("node_critique_summary",   create_critique_summary_node())
-    workflow.add_node("node_critique_actions",   create_critique_actions_node())
-    workflow.add_node("node_refinement_referee", create_refinement_referee_node())
+    if settings.ENABLE_REFINEMENT_LOOP:
+        workflow.add_node("node_critique_nli",       create_nli_critique_node())
+        workflow.add_node("node_refinement_referee", create_refinement_referee_node())
 
     # ── Phase 2: task decomposer nodes ───────────────────────────────────────
     workflow.add_node("node_task_decomposer",    create_task_decomposer_node())
@@ -612,24 +670,21 @@ def create_meeting_summarizer_graph(language=None):
     workflow.add_edge("summarize",       "extract_actions")
     workflow.add_edge("extract_actions", "format_output")
 
-    # ── Phase 1 edges: fanout from format_output ──────────────────────────────
-    # Both critique nodes run sequentially (LangGraph doesn't support true parallel
-    # by default; the fanin counter handles the logical synchronisation).
-    workflow.add_edge("format_output",          "node_critique_summary")
-    workflow.add_edge("node_critique_summary",  "node_critique_actions")
+    # ── Phase 1 & 2 edges ─────────────────────────────────────────────────────
+    if settings.ENABLE_REFINEMENT_LOOP:
+        workflow.add_edge("format_output", "node_critique_nli")
+        workflow.add_conditional_edges(
+            "node_critique_nli",
+            nli_router,
+            {
+                "referee": "node_refinement_referee",
+                "bypass": "node_task_decomposer",
+            }
+        )
+        workflow.add_edge("node_refinement_referee", "node_task_decomposer")
+    else:
+        workflow.add_edge("format_output", "node_task_decomposer")
 
-    # After both critiques have updated the fanin counter, route to referee
-    workflow.add_conditional_edges(
-        "node_critique_actions",
-        fanin_router,
-        {
-            "referee": "node_refinement_referee",
-            "wait": "node_critique_actions",  # safety loop (should never trigger)
-        },
-    )
-
-    # ── Phase 2 edges ─────────────────────────────────────────────────────────
-    workflow.add_edge("node_refinement_referee", "node_task_decomposer")
     workflow.add_edge("node_task_decomposer",    "node_format_task_output")
     workflow.add_edge("node_format_task_output", END)
 

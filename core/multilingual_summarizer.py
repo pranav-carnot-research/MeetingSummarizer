@@ -1,7 +1,8 @@
-from lg import summarize_meeting as original_summarize_meeting
+from lg import summarize_meeting as original_summarize_meeting, chunk_transcript_with_overlap
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from services.llm_service import get_llm, create_chat_prompt_template, create_output_parser
+import json
 
 def summarize_meeting_multilingual(transcript, participants, language=None, additional_context=None):
     """
@@ -26,24 +27,37 @@ def summarize_meeting_multilingual(transcript, participants, language=None, addi
     # Initialize the LLM with increased temperature for better multilingual generation
     llm = get_llm(temperature=0.2, purpose="multilingual")
     
-    # First, get the meeting summary
+    # Define sequential prompt
     system_message = f"""You are an expert meeting summarizer working with {language_name} content.
-    Your task is to create a meeting summary ENTIRELY IN {language_name}.
+Your task is to create and sequentially refine a meeting summary and action items ENTIRELY IN {language_name}.
 
-    Based on the meeting transcript, create a concise summary that captures what was discussed and decided.
+You will be given the GLOBAL SUMMARY generated from the previous chunks of the transcript (in {language_name}), and the NEXT CHUNK of the transcript (which is a continuation of the meeting).
 
-    Follow this structure:
-    1. Summary: A 2-3 sentence overview of the meeting IN {language_name}
-    2. Key Points: Bullet points of important topics discussed IN {language_name}
-    3. Decisions: Bullet points of decisions made during the meeting IN {language_name}
+Your task is to refine, update, and extend the GLOBAL SUMMARY using the new information in the next chunk.
+Ensure that:
+1. Continuation context: Connect related points, decisions, or action items where appropriate. The final output must read seamlessly as a single, cohesive meeting summary.
+2. Integration:
+   - Update/refine the summary paragraph, key_points, or decisions based on new discussion.
+   - Add new key points, decisions, or action items.
+3. Deduplication: Merge similar/duplicate key points, decisions, or action items.
+4. Language check: ALL output text (summary, key points, decisions, actions) must be ENTIRELY in {language_name} only. DO NOT mix languages.
 
-    Your response must be a JSON object with the fields 'summary', 'key_points', and 'decisions'.
-    ENSURE ALL TEXT IS IN {language_name} ONLY. DO NOT MIX LANGUAGES.
+Your response must be a JSON object with this exact structure:
+{{
+  "summary": "overview paragraph in {language_name}",
+  "key_points": ["point1 in {language_name}", "point2 in {language_name}"],
+  "decisions": ["decision1 in {language_name}", "decision2 in {language_name}"],
+  "action_items": [
+    {{
+      "action": "action in {language_name}",
+      "assignee": "assignee in {language_name}",
+      "due_date": "due date in {language_name}",
+      "priority": "high/medium/low"
+    }}
+  ]
+}}
+"""
 
-    If the transcript contains English, translate all summary content to {language_name}.
-    """
-
-    # Update user_message to include additional context if provided
     context_section = ""
     if additional_context:
         context_section = f"""
@@ -51,102 +65,64 @@ def summarize_meeting_multilingual(transcript, participants, language=None, addi
         
         """
 
-    user_message = f"""Meeting Transcript: {{transcript}}
+    user_template = """GLOBAL SUMMARY SO FAR:
+{global_summary}
 
-    Participants: {{participants}}
-    
-    {context_section}
-    Please summarize this meeting COMPLETELY in {{language_name}}, ensuring all output is in {{language_name}} only."""
+NEXT TRANSCRIPT CHUNK (Continuation):
+{chunk}
 
-    summary_prompt = create_chat_prompt_template(system_message, user_message)
-        
+Participants: {participants}
+""" + context_section + f"\nPlease summarize this meeting chunk and update the global summary COMPLETELY in {language_name}."
+
+    prompt_template = create_chat_prompt_template(system_message, user_template)
     json_parser = create_output_parser()
-    summary_chain = summary_prompt | llm | json_parser    
-    # Then, extract action items
-    action_prompt = ChatPromptTemplate.from_messages([
-        ("system", f"""You are an expert at identifying action items from meeting transcripts.
-        
-        IMPORTANT: YOU MUST GENERATE ALL OUTPUT ENTIRELY IN {language_name}.
-        
-        For each action item, identify:
-        - The specific action to be taken
-        - Who is responsible for the action
-        - Any mentioned deadline or due date
-        - The priority level (high, medium, low) based on context
-        
-        Return your results as a JSON array of action items. If no action items are mentioned, return an empty array.
-        Each action item should have fields: 'action', 'assignee', 'due_date', and 'priority'.
-        
-        ALL TEXT MUST BE IN {language_name} ONLY.
-        
-        IMPORTANT: Always provide a string value for each field. If a field is missing:
-        - For 'due_date': use a {language_name} translation of "Not specified" 
-        - For 'priority': use the {language_name} equivalent of "medium"
-        - For 'assignee': use the {language_name} equivalent of "Unassigned"
-        
-        DO NOT return null values - use appropriate string defaults instead.
-        """),
-        ("human", """Meeting Transcript: {transcript}
-        
-        Participants: {participants}
-        
-        Extract action items from this meeting IN {language_name} ONLY.""")
-    ])
-    
-    action_chain = action_prompt | llm | JsonOutputParser()
-    
+    chain = prompt_template | llm | json_parser
+
     try:
-        if len(transcript) > 8000:
-            print(f"Long transcript detected ({len(transcript)} chars), breaking into chunks")
-            chunks = chunk_transcript(transcript)
+        chunks = chunk_transcript_with_overlap(transcript, chunk_size=4000, overlap_size=800)
+        print(f"Long transcript detected ({len(transcript)} chars), breaking into {len(chunks)} chunks for multilingual processing")
+        
+        global_summary = {
+            "summary": "",
+            "key_points": [],
+            "decisions": [],
+            "action_items": []
+        }
+        
+        for i, chunk in enumerate(chunks):
+            print(f"Processing chunk {i+1}/{len(chunks)}")
             
-            # Get summaries for each chunk
-            chunk_summaries = []
-            for i, chunk in enumerate(chunks):
-                print(f"Processing chunk {i+1}/{len(chunks)}")
-                chunk_result = summary_chain.invoke({
-                    "transcript": chunk,
-                    "participants": participants,
-                    "language_name": language_name
-                })
-                chunk_summaries.append(chunk_result)
-            
-            # Merge summaries
-            meeting_summary = {
-                "summary": " ".join([s.get("summary", "") for s in chunk_summaries]),
-                "key_points": [],
-                "decisions": []
-            }
-            
-            # Collect all key points and decisions
-            for summary in chunk_summaries:
-                meeting_summary["key_points"].extend(summary.get("key_points", []))
-                meeting_summary["decisions"].extend(summary.get("decisions", []))
-        else:
-            # Original code for shorter transcripts
-            meeting_summary = summary_chain.invoke({
-                "transcript": transcript,
-                "participants": participants,
+            if i == 0:
+                global_summary_str = f"No summary generated yet. This is the first chunk."
+            else:
+                global_summary_str = json.dumps(global_summary, indent=2)
+                
+            summary_result = chain.invoke({
+                "global_summary": global_summary_str,
+                "chunk": chunk,
+                "participants": ", ".join(participants),
                 "language_name": language_name
             })
-        
-        # Get action items
-        action_items = action_chain.invoke({
-            "transcript": transcript,
-            "participants": participants,
-            "language_name": language_name
-        })
-        
-        # Format into the expected result structure
+            
+            global_summary = {
+                "summary": summary_result.get("summary", ""),
+                "key_points": summary_result.get("key_points", []),
+                "decisions": summary_result.get("decisions", []),
+                "action_items": summary_result.get("action_items", [])
+            }
+            
         result = {
-            "meeting_summary": meeting_summary,
-            "action_items": action_items
+            "meeting_summary": {
+                "summary": global_summary["summary"],
+                "key_points": global_summary["key_points"],
+                "decisions": global_summary["decisions"]
+            },
+            "action_items": global_summary["action_items"]
         }
         
         return result
-    
+        
     except Exception as e:
-        # If something fails, fall back to the original English function
         print(f"Error generating {language_name} summary: {str(e)}. Falling back to English.")
         return original_summarize_meeting(transcript, participants)
     

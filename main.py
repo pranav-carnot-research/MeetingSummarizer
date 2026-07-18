@@ -466,6 +466,8 @@ async def summarize_background(
             "refinement_notes": result.get("refinement_notes"),
             # Phase 2: rich task plan from the task decomposer agent
             "task_plan": result.get("task_plan", []),
+            # Audit trail: draft → critique reports → refinement outcome
+            "pipeline_trace": result.get("pipeline_trace"),
             "metadata": {
                 "language": language,
                 "language_name": language_name,

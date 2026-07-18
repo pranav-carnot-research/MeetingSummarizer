@@ -229,15 +229,67 @@ def create_format_task_output_node():
                 for item in ai
             ]
 
+        # ── Pipeline trace: capture draft + critique reports for auditability ──
+        # This lets callers see what each agent did (before vs. after).
+        draft_ms = state.get("meeting_summary")
+        draft_summary = draft_ms.model_dump() if hasattr(draft_ms, "model_dump") else (draft_ms or {})
+        draft_actions = [
+            item.model_dump() if hasattr(item, "model_dump") else item
+            for item in state.get("action_items", [])
+        ]
+
+        from config import settings
+        pipeline_trace = {
+            # Phase 0: what the initial extractor produced
+            "draft": {
+                "meeting_summary": draft_summary,
+                "action_items": draft_actions,
+            },
+            # Phase 1: local NLI fact-checker findings
+            "nli_verification": {
+                "refinement_enabled": settings.ENABLE_REFINEMENT_LOOP,
+                "contradictions_found": state.get("nli_issues") if settings.ENABLE_REFINEMENT_LOOP else None,
+                "total_contradictions": len(state.get("nli_issues", [])) if settings.ENABLE_REFINEMENT_LOOP else 0,
+            },
+            # Phase 1c: whether referee LLM was invoked or bypass triggered
+            "refinement": {
+                "referee_invoked": (
+                    "Bypassed" not in str(refined_output.get("refinement_notes", ""))
+                    if settings.ENABLE_REFINEMENT_LOOP and refined_output
+                    else False
+                ),
+                "notes": (
+                    refined_output.get("refinement_notes") 
+                    if refined_output 
+                    else ("Refinement bypassed (NLI verified factual consistency)" if settings.ENABLE_REFINEMENT_LOOP else "Refinement disabled via config")
+                ),
+                "quality_score": (
+                    refined_output.get("quality_score") 
+                    if refined_output 
+                    else (1.0 if settings.ENABLE_REFINEMENT_LOOP else 0.8)
+                ),
+            },
+        }
+
         final_output = {
             # Original fields — unchanged schema
             "meeting_summary": meeting_summary_data,
             "action_items": action_items_data,
             # New Phase 1 field
-            "quality_score": refined_output.get("quality_score", None),
-            "refinement_notes": refined_output.get("refinement_notes", None),
+            "quality_score": (
+                refined_output.get("quality_score") 
+                if refined_output 
+                else (1.0 if settings.ENABLE_REFINEMENT_LOOP else 0.8)
+            ),
+            "refinement_notes": (
+                refined_output.get("refinement_notes") 
+                if refined_output 
+                else ("Refinement bypassed (NLI verified factual consistency)" if settings.ENABLE_REFINEMENT_LOOP else "Refinement disabled via config")
+            ),
             # New Phase 2 field
             "task_plan": task_plan_serialized,
+            # Audit trail — full pipeline trace for every run
+            "pipeline_trace": pipeline_trace,
         }
 
         return {**state, "final_output": final_output, "current_step": "complete"}

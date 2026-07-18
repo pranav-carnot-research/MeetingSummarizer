@@ -55,6 +55,52 @@ Decisions are high-level strategic or scope resolutions that the group reached t
 
 Keep it factual. {language_instructions}"""
 
+SEQUENTIAL_SUMMARIZE_SYSTEM_PROMPT = """You are an expert meeting assistant. You are summarizing a meeting transcript in chunks.
+You will be given the GLOBAL SUMMARY generated from the previous chunks of the transcript, and the NEXT CHUNK of the transcript (which is a continuation of the meeting).
+
+Your task is to refine, update, and extend the GLOBAL SUMMARY using the new information in the next chunk.
+Ensure that:
+1. Continuation context: Connect related points, decisions, or action items where appropriate. Avoid treating the chunk as a completely separate meeting. The final output must read seamlessly as a single, cohesive meeting summary.
+2. Integration:
+   - If a topic or decision in the global summary is discussed further or modified, update/refine the summary paragraph, key_points, or decisions.
+   - If new key points or decisions are made in this chunk, add them.
+   - Update/add action items: extract any new agreed-upon tasks with assignee, due date, and priority.
+3. Deduplication: Merge similar or duplicate key points, decisions, or action items to keep the output clean and concise.
+4. Final structure: You must output ONLY a JSON object with this exact structure:
+{{
+  "summary": "comprehensive paragraph covering all main topics discussed so far in flowing prose",
+  "key_points": ["point1", "point2"],
+  "decisions": ["decision1", "decision2"],
+  "action_items": [
+    {{
+      "action": "specific action description with technical details",
+      "assignee": "person name or Unassigned",
+      "due_date": "date or Not specified",
+      "priority": "high/medium/low"
+    }}
+  ]
+}}
+
+RULES FOR SUMMARY FIELD:
+- Cover EVERY major topic that was discussed in the meeting. Do not omit topics just to keep it short.
+- Write in flowing prose (not bullet points). Group related points into coherent sentences.
+- Be specific: name the actual systems, features, products, or people involved — not vague placeholders.
+
+RULES FOR KEY_POINTS FIELD:
+- List the most important factual takeaways — specific outcomes, numbers, constraints, or findings.
+- Each point should be self-contained and informative, not a vague topic label.
+
+RULES FOR DECISIONS FIELD:
+- High-level strategic or scope resolutions that the group reached together. They describe WHAT was resolved, not who will do it or how.
+- A decision has NO owner, NO deadline, and NO implementation detail.
+
+RULES FOR ACTION_ITEMS FIELD:
+- Extract only agreed-upon tasks with assignee, due date, and priority.
+- Be technically specific. Avoid vague generic descriptions.
+- Never embed deadline or timing phrases inside the action description (use the due_date field).
+
+{language_instructions}"""
+
 EXTRACT_ACTIONS_SYSTEM_PROMPT = """You are a precise meeting assistant. Extract only AGREED-UPON action items from the transcript as a JSON array:
 [
   {{
@@ -91,6 +137,15 @@ CRITICAL RULES:
    - BAD: "Set up a test for the endpoint"  GOOD: "Set up a load test for the ML model prediction API endpoint to measure latency under heavy traffic"
    - BAD: "Update the document"  GOOD: "Update the PRD and Jira tickets to reflect Q3 scope: Scoreboard Extraction Widget"
 
+4b. NO DEADLINE IN ACTION TEXT: The `action` field describes WHAT to do — not WHEN. Never embed deadline or timing phrases inside the action description. The `due_date` field already captures the timing.
+   - BAD: "Document the PostgreSQL schema changes in Confluence by this Friday"
+   - GOOD: "Document the PostgreSQL schema changes and migration plan in Confluence", due_date: "this Friday"
+   - BAD: "Set up a load test for the ML model endpoint this week and share results by next Wednesday"
+   - GOOD: "Set up a load test for the ML model endpoint and share performance results", due_date: "next Wednesday"
+   - BAD: "Update the PRD by tomorrow afternoon"
+   - GOOD: "Update the PRD and Jira tickets to reflect the new Q3 scope", due_date: "tomorrow afternoon"
+
+
 5. PRIORITY — assign based on these objective signals, NOT gut feeling:
    HIGH: Task has a near-term hard deadline (today, tomorrow, this week, end of sprint) AND/OR directly blocks other people or a launch.
      Signals: "by tomorrow", "before the sprint ends", "we can't proceed until", "blocking the team", "hard launch date", customer-facing impact.
@@ -112,7 +167,7 @@ EXAMPLES OF WHAT TO EXCLUDE:
 
 EXAMPLES WITH PRIORITY REASONING:
 - Transcript: "Bob: I will patch the authentication bug before tomorrow's demo. Alice: Yes, that's critical."
-  -> {{"action": "Patch the OAuth authentication bug before the product demo", "assignee": "Bob", "due_date": "tomorrow", "priority": "high"}}  (hard deadline, demo-blocking)
+  -> {{"action": "Patch the OAuth authentication bug in the auth service", "assignee": "Bob", "due_date": "tomorrow", "priority": "high"}}  (hard deadline, demo-blocking)
 - Transcript: "Sara: I'll write up the onboarding guide for new engineers sometime next week. Team: Sure, that works."
   -> {{"action": "Write onboarding guide for new engineers", "assignee": "Sara", "due_date": "next week", "priority": "medium"}}  (defined but flexible deadline, no blocker)
 - Transcript: "Dave: Someone needs to clean up the README file. Alice: Yeah, good point. Let's put it on the backlog."
@@ -218,11 +273,10 @@ REFINEMENT_REFEREE_SYSTEM_PROMPT = """You are a senior meeting analyst producing
 You have been given:
 1. A DRAFT SUMMARY with key points and decisions
 2. A DRAFT ACTION ITEMS list
-3. A CRITIQUE of the summary (issues found)
-4. A CRITIQUE of the action items (false positives, duplicates, and missed items)
-5. The RAW TRANSCRIPT
+3. A list of FACTUAL CONTRADICTIONS ENCOUNTERED by a deterministic NLI fact-checker
+4. The RAW TRANSCRIPT
 
-Your job: produce a REFINED, ACCURATE final version fixing all validated issues from both critiques.
+Your job: produce a REFINED, ACCURATE final version fixing all validated factual contradictions.
 
 IMPORTANT: Output ONLY raw JSON. No markdown, no code blocks, no explanation text before or after.
 
@@ -264,19 +318,20 @@ DECISIONS vs. ACTION ITEMS — enforce this boundary strictly:
   * If something from the draft decisions[] names an owner or deadline, move it to action_items[] instead.
   * If something from the draft action_items[] is actually a group-level resolution with no owner, move it to decisions[] instead.
 
-- Apply ONLY critique issues clearly supported by the transcript.
-- Ignore critique suggestions that contradict the transcript.
+- Apply ONLY corrections clearly supported by the transcript to resolve the factual contradictions.
 - Keep action items ONLY if they have clear agreement signals to be executed in the transcript.
 - NO NEGATIVE OR POSTPONED ACTIONS: Do NOT include action items for "skipping", "ignoring", "not doing", "holding off", or "postponing" something. If the team decided to postpone or skip an item, it must be completely excluded from the final action_items list.
 - SMART DEDUPLICATION: Merge action items only when ALL THREE conditions hold: (A) same underlying artifact or system, (B) same core purpose, (C) compatible deadlines (same date, or one has none).
   * MERGE: "Set up load test for ML model endpoint" + "Verify API latency" + "Share latency numbers" by the same person — same endpoint, same purpose, compatible deadlines → merge into one.
   * DO NOT MERGE: Items with DIFFERENT explicit deadlines are separate tasks, even if same assignee. "Fix parsing bug (Thursday)" and "Write API docs in Confluence (tomorrow morning)" must stay as two separate action items — different artifacts, different deadlines.
   * DO NOT MERGE: Different types of work (writing code vs. writing documentation) are separate deliverables even for the same project and same person.
-  * Use the action_items.duplicates field from the critique (if present) to guide merging, but apply the three-condition check before accepting any suggested merge.
 - MANDATORY TECHNICAL SPECIFICITY: Every action item description MUST include the specific technology, system, document, or artifact name. Replace vague references:
   * "document the schema changes" -> "document the PostgreSQL schema changes and migration steps in Confluence"
   * "update the document" -> "update the PRD and Jira tickets with the revised Q3 feature scope"
   * "set up a test" -> "set up a load test for the [specific component] endpoint"
+- NO DEADLINE IN ACTION TEXT: The `action` field must describe WHAT to do, not WHEN. Strip any deadline/timing phrases out of the action description and ensure they are in due_date only.
+  * BAD: "Document the schema changes in Confluence by Friday" → GOOD: action="Document the PostgreSQL schema changes in Confluence", due_date="Friday"
+  * BAD: "Set up a load test this week and share results by Wednesday" → GOOD: action="Set up a load test for the ML model endpoint and share performance results", due_date="next Wednesday"
 - PRIORITY — re-evaluate every action item's priority using these objective signals:
   * HIGH: Near-term hard deadline (today/tomorrow/this week/end of sprint) AND/OR directly blocks other people or a launch. Signals: "by tomorrow", "before the sprint ends", "blocking the team", customer-facing impact.
   * MEDIUM: Defined but flexible deadline (next week, next sprint) OR important but not blocking anyone right now. Signals: "sometime next week", "before the next sync", internal work with no external dependency.
