@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, BackgroundTasks, Form, HTTPException, Depends, Query, Request
+from fastapi import FastAPI, File, UploadFile, BackgroundTasks, Form, HTTPException, Depends, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -7,10 +7,14 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any, Union
 import uuid
 import os
+import re
+import shutil
 import tempfile
 import json
 import logging
 from datetime import datetime
+from pathlib import Path
+from pydub import AudioSegment
 
 # Import configuration
 from config import settings, get_settings
@@ -22,22 +26,16 @@ from services.summarization_service import summarize_meeting, summarize_long_mee
 from services.job_service import JobStatus, get_job_status, update_job_status, save_job_result
 from services.utils import format_time
 
-# Configure logging
-logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper()),
-                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("meeting-summarizer-api")
-
-# Configure more detailed logging for language detection
+# Configure logging — single consolidated setup
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=getattr(logging, settings.LOG_LEVEL.upper()),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
         logging.FileHandler('language_detection.log')
     ]
 )
-
-# Create a specific logger for language detection
+logger = logging.getLogger("meeting-summarizer-api")
 lang_logger = logging.getLogger('language-detection')
 # Initialize Jinja2 templates
 templates = Jinja2Templates(directory="templates")
@@ -46,17 +44,18 @@ templates = Jinja2Templates(directory="templates")
 app = FastAPI(
     title="Meeting Summarizer API",
     description="API for summarizing meeting recordings and transcripts",
-    version="1.0.0",
-    max_upload_size=100 * 1024 * 1024  # 100MB limit
+    version="1.0.0"
 )
 
-# Mount static files directory
+# Mount static files and recordings directories
+os.makedirs("recordings", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/recordings", StaticFiles(directory="recordings"), name="recordings")
 
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["http://localhost:8000", "http://localhost:5173", "http://127.0.0.1:8000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -83,6 +82,9 @@ class JobResponse(BaseModel):
 class LanguageOption(BaseModel):
     code: str
     name: str
+
+class VocabularyRequest(BaseModel):
+    term: str
 
 # Serve the main application page
 @app.get("/", response_class=HTMLResponse)
@@ -145,8 +147,8 @@ async def upload_audio(
             process_audio_background,
             job_id,
             audio_file_path,
-            is_long_recording,
-            language
+            language,
+            is_long_recording
         )
         
         return {"job_id": job_id, "status": "pending"}
@@ -190,7 +192,6 @@ async def process_audio_background(job_id: str, audio_path: str, language: Optio
             audio_path_to_process = audio_path
             
         # Save a copy to a permanent recordings/ folder in the project root
-        import shutil
         try:
             recordings_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recordings")
             os.makedirs(recordings_dir, exist_ok=True)
@@ -201,10 +202,8 @@ async def process_audio_background(job_id: str, audio_path: str, language: Optio
             logger.error(f"Failed to copy processed audio to recordings/ directory: {str(e)}")
         
         # Check if we should use long processing or standard processing
-        # For very short files, always use standard processing regardless of is_long_recording flag
         is_short_audio = False
         try:
-            from pydub import AudioSegment
             audio = AudioSegment.from_file(audio_path_to_process)
             duration_seconds = len(audio) / 1000
             logger.info(f"Audio duration: {duration_seconds} seconds")
@@ -269,20 +268,17 @@ async def process_audio_background(job_id: str, audio_path: str, language: Optio
         detected_language = result.get('language', 'auto-detect')
         logger.info(f"Detected language for audio: {detected_language}")
         
-        # Save the result with confidence metrics preservation
+        # Run Auto-Correction on Low-Confidence Words (< 65%) using Dictionary & Glossary matching
         if result:
-            # Log confidence metrics if present
-            if "confidence_metrics" in result:
-                logger.info(f"Saving confidence metrics: {result['confidence_metrics']}")
-            else:
-                logger.warning("No confidence metrics found in processing result")
-            
-            # Add speaker confidence metrics logging
-            if "speaker_confidence_metrics" in result:
-                logger.info(f"Saving speaker confidence metrics: {result['speaker_confidence_metrics']}")
-            else:
-                logger.warning("No speaker confidence metrics found in processing result")
-            
+            try:
+                from services.autocorrect_service import autocorrect_low_confidence_words
+                segs = result.get("segments") or result.get("transcript") or result.get("raw_transcription")
+                if segs:
+                    logger.info("Running Dictionary & Glossary Auto-Correction on low-confidence words...")
+                    autocorrect_low_confidence_words(segs)
+            except Exception as ac_err:
+                logger.error(f"Error running auto-correction service: {str(ac_err)}")
+
             # Ensure all result fields are preserved
             save_job_result(job_id, result)
             update_job_status(job_id, JobStatus.COMPLETED, "Audio processing complete", progress=100)
@@ -352,6 +348,16 @@ async def get_participants(request: TextRequest):
     except Exception as e:
         logger.error(f"Error extracting participants: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error extracting participants: {str(e)}")
+# Endpoint to save human-edited terms into custom glossary
+@app.post("/api/vocabulary")
+async def add_vocabulary(req: VocabularyRequest):
+    try:
+        from services.autocorrect_service import save_custom_term
+        saved = save_custom_term(req.term)
+        return {"status": "success", "saved": saved, "term": req.term}
+    except Exception as e:
+        logger.error(f"Error saving vocabulary term: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error saving vocabulary: {str(e)}")
 
 # Endpoint to generate meeting summary
 @app.post("/api/summarize", response_model=JobResponse)
@@ -376,7 +382,8 @@ async def summarize(background_tasks: BackgroundTasks, request: ProcessRequest):
         request.transcript,
         request.participants,
         request.language,
-        request.is_long_recording
+        request.is_long_recording,
+        request.additional_context
     )
     
     return {"job_id": job_id, "status": "pending"}
@@ -456,32 +463,35 @@ async def summarize_background(
             speaker_confidence_metrics = result["speaker_confidence_metrics"]
             logger.info("Found speaker confidence metrics in processing result")
         
-        # Combine results
+        # Combine results safely
+        meeting_summary_val = result.get("meeting_summary") if isinstance(result, dict) else {}
+        action_items_val = result.get("action_items", []) if isinstance(result, dict) else []
+        
         final_result = {
-            "meeting_summary": result["meeting_summary"],
-            "action_items": result["action_items"],
-            "speaker_summaries": speaker_summaries,
+            "meeting_summary": meeting_summary_val if meeting_summary_val else {"summary": str(result), "key_points": [], "decisions": []},
+            "action_items": action_items_val if action_items_val else [],
+            "speaker_summaries": speaker_summaries if speaker_summaries else {},
             # Phase 1: quality metadata from the refinement referee
-            "quality_score": result.get("quality_score"),
-            "refinement_notes": result.get("refinement_notes"),
+            "quality_score": result.get("quality_score") if isinstance(result, dict) else None,
+            "refinement_notes": result.get("refinement_notes") if isinstance(result, dict) else None,
             # Phase 2: rich task plan from the task decomposer agent
-            "task_plan": result.get("task_plan", []),
+            "task_plan": result.get("task_plan", []) if isinstance(result, dict) else [],
             # Audit trail: draft → critique reports → refinement outcome
-            "pipeline_trace": result.get("pipeline_trace"),
+            "pipeline_trace": result.get("pipeline_trace") if isinstance(result, dict) else None,
             "metadata": {
                 "language": language,
                 "language_name": language_name,
                 "participant_count": len(participants),
                 "is_long_recording": is_long_recording,
                 "timestamp": datetime.now().isoformat(),
-                "speaker_confidence_metrics": speaker_confidence_metrics  # Include in metadata
+                "speaker_confidence_metrics": speaker_confidence_metrics
             }
         }
         
         # Save the result
         save_job_result(job_id, final_result)
         update_job_status(job_id, JobStatus.COMPLETED, "Summarization complete", progress=100)
-        
+            
     except Exception as e:
         logger.error(f"Error in summarization: {str(e)}")
         update_job_status(job_id, JobStatus.FAILED, f"Error generating summary: {str(e)}")
@@ -507,11 +517,7 @@ def parse_transcript_to_segments(transcript_text):
             text = parts[1].strip()
             
             # Check if there's a speaker number in the speaker part
-            speaker_match = None
-            if "Speaker" in speaker_part:
-                import re
-                speaker_match = re.search(r'Speaker\s+(\d+)', speaker_part)
-            
+            speaker_match = re.search(r'Speaker\s+(\d+)', speaker_part) if "Speaker" in speaker_part else None
             speaker = speaker_match.group(1) if speaker_match else "1"
             
             # Create segment
@@ -527,6 +533,96 @@ def parse_transcript_to_segments(transcript_text):
             current_time += 30
     
     return segments
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WebSocket Real-Time Audio Streaming Endpoint
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.websocket("/ws/realtime-audio")
+async def websocket_realtime_audio(websocket: WebSocket, language: Optional[str] = None):
+    """
+    WebSocket endpoint for real-time audio streaming, transcription, and diarization.
+    Receives binary audio chunks (MediaRecorder stream) and pushes live JSON segment updates.
+    """
+    await websocket.accept()
+    job_id = str(uuid.uuid4())
+    logger.info(f"WebSocket real-time audio connection accepted for job {job_id}")
+
+    processor = None
+    try:
+        from core.realtime_processor import WebSocketRealTimeProcessor
+        processor = WebSocketRealTimeProcessor(language=language)
+
+        update_job_status(job_id, JobStatus.PROCESSING, "Real-time streaming in progress", progress=50)
+
+        while True:
+            message = await websocket.receive()
+            if "bytes" in message and message["bytes"]:
+                chunk = message["bytes"]
+                live_segments = processor.process_audio_chunk(chunk)
+                await websocket.send_json({
+                    "type": "live_update",
+                    "job_id": job_id,
+                    "segments": live_segments
+                })
+            elif "text" in message and message["text"]:
+                try:
+                    data = json.loads(message["text"])
+                    if data.get("action") == "STOP":
+                        break
+                except Exception:
+                    pass
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket client disconnected for job {job_id}")
+    except Exception as e:
+        logger.error(f"Error in WebSocket real-time audio endpoint: {e}")
+    finally:
+        if processor:
+            recordings_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recordings")
+            os.makedirs(recordings_dir, exist_ok=True)
+            audio_path = os.path.join(recordings_dir, f"{job_id}.wav")
+            processor.save_final_recording(audio_path)
+
+            final_segments = processor.diarizer.get_live_segments()
+            formatted_transcript = []
+            raw_transcription = []
+            for seg in final_segments:
+                spk = seg.get("speaker", "Speaker 1")
+                txt = seg.get("text", "")
+                ts = seg.get("timestamp", "00:00")
+                conf = seg.get("confidence", 85.0)
+
+                formatted_transcript.append(f"[{ts}] {spk}: {txt}")
+                raw_transcription.append({
+                    "speaker": spk,
+                    "text": txt,
+                    "timestamp": ts,
+                    "confidence": conf,
+                    "confidence_level": "high" if conf >= 90 else ("medium" if conf >= 70 else "low"),
+                    "words": seg.get("words", []),
+                    "start_formatted": ts
+                })
+
+            job_result = {
+                "job_id": job_id,
+                "transcript": raw_transcription,
+                "segments": final_segments,
+                "formatted_transcript": formatted_transcript,
+                "raw_transcription": raw_transcription,
+                "language": language or "en",
+                "recording_path": f"/recordings/{job_id}.wav"
+            }
+            save_job_result(job_id, job_result)
+            update_job_status(job_id, JobStatus.COMPLETED, "Real-time processing complete", progress=100)
+
+            try:
+                await websocket.send_json({
+                    "type": "final_result",
+                    "job_id": job_id,
+                    "result": job_result
+                })
+            except Exception:
+                pass
 
 # Health check endpoint
 @app.get("/api/health")

@@ -73,6 +73,66 @@ def preprocess_audio(audio_file: str) -> str:
         # If preprocessing fails, return the original file
         return audio_file
 
+def _transcribe_with_per_chunk_language_detection(
+    model, audio: np.ndarray, transcribe_options: Dict[str, Any], chunk_duration: int = 30, sample_rate: int = 16000
+) -> Dict[str, Any]:
+    """
+    Transcribe long audio in fixed-size chunks, re-detecting language for each chunk
+    instead of once for the whole file. Whisper's high-level transcribe() only detects
+    language from the first ~30s and then locks it in for the entire file, which breaks
+    down on code-switched audio (e.g. Hindi + English in the same recording).
+    """
+    chunk_samples = int(chunk_duration * sample_rate)
+    all_segments = []
+    languages_detected = []
+    next_id = 0
+
+    for chunk_start_sample in range(0, len(audio), chunk_samples):
+        chunk = audio[chunk_start_sample:chunk_start_sample + chunk_samples]
+        if len(chunk) < sample_rate * 0.5:  # skip trailing slivers under 0.5s
+            continue
+
+        chunk_offset_sec = chunk_start_sample / sample_rate
+        chunk_tensor = torch.tensor(chunk)
+
+        try:
+            chunk_result = model.transcribe(chunk_tensor, **transcribe_options)
+        except Exception as e:
+            logger.warning(f"Chunk at {chunk_offset_sec:.1f}s failed to transcribe: {e}")
+            continue
+
+        chunk_lang = chunk_result.get('language')
+        if chunk_lang:
+            languages_detected.append(chunk_lang)
+
+        for segment in chunk_result.get("segments", []):
+            segment = dict(segment)
+            segment["id"] = next_id
+            next_id += 1
+            segment["start"] = segment.get("start", 0) + chunk_offset_sec
+            segment["end"] = segment.get("end", 0) + chunk_offset_sec
+            if "words" in segment and segment["words"]:
+                adjusted_words = []
+                for word in segment["words"]:
+                    word = dict(word)
+                    word["start"] = word.get("start", 0) + chunk_offset_sec
+                    word["end"] = word.get("end", 0) + chunk_offset_sec
+                    adjusted_words.append(word)
+                segment["words"] = adjusted_words
+            all_segments.append(segment)
+
+    # Overall language = most common language across chunks
+    overall_language = None
+    if languages_detected:
+        overall_language = max(set(languages_detected), key=languages_detected.count)
+
+    return {
+        "segments": all_segments,
+        "language": overall_language,
+        "languages_detected": languages_detected,
+    }
+
+
 def transcribe_audio(audio_file: str, language: Optional[str] = None) -> Dict[str, Any]:
     """
     Transcribe audio file using Whisper model
@@ -91,42 +151,51 @@ def transcribe_audio(audio_file: str, language: Optional[str] = None) -> Dict[st
         logger.info(f"Using cached Whisper model '{model_size}'")
     model = _whisper_cache[model_size]
 
-    # Load audio with librosa
-    audio = librosa.load(audio_file, sr=16000)[0]  # Whisper requires 16kHz sample rate
+    # Load audio with librosa at 16kHz sample rate
+    audio = librosa.load(audio_file, sr=16000)[0]
 
-    # Configure transcription to include word-level timestamps and confidence scores
-    # Note: We need to enable word timestamps to get per-segment confidence
+    # Peak normalize audio for optimum Whisper log-mel spectrogram feature extraction
+    if len(audio) > 0 and np.max(np.abs(audio)) > 0:
+        audio = audio / np.max(np.abs(audio)) * 0.95
+
+    # Configure high-accuracy Whisper ASR transcription parameters
     transcribe_options = {
-        "word_timestamps": True,  # Enable word-level details
-        "suppress_tokens": [-1],  # Don't suppress any tokens
-        "without_timestamps": False,  # Keep timestamps
-        "max_initial_timestamp": None,
-        "fp16": torch.cuda.is_available()  # Use fp16 if GPU is available
+        "word_timestamps": True,          # Enable word-level timestamps & probabilities
+        "beam_size": 5,                   # Deep beam search (5 beam width) instead of greedy decoding
+        "best_of": 5,                     # Sample 5 candidate sequences
+        "patience": 1.0,                  # Patience for beam search decoding
+        "temperature": 0.0,                # Single pass only — no retry cascade on low-confidence segments
+        "suppress_tokens": [-1],          # Don't suppress any tokens
+        "without_timestamps": False,      # Keep exact word timestamps
+        "initial_prompt": "This is a formal meeting transcript discussing technical project updates, action items, schedules, and metrics.",
+        "fp16": torch.cuda.is_available()  # Use fp16 on GPU
     }
 
     # Add language if specified
-    if language and language != "auto":
+    explicit_language = bool(language and language != "auto")
+    if explicit_language:
         transcribe_options["language"] = language
 
-    # Transcribe with options
     detected_language = None
     try:
-        # Convert audio to torch tensor if not already
-        if not isinstance(audio, torch.Tensor):
-            audio_tensor = torch.tensor(audio)
-        else:
-            audio_tensor = audio
-
-        # Run transcription with our options
-        result = model.transcribe(audio_tensor, **transcribe_options)
-
-        # Extract detected language
-        detected_language = result.get('language')
-
-        if language:
+        if explicit_language:
+            # Single language already known — no need to chunk for re-detection.
+            audio_tensor = audio if isinstance(audio, torch.Tensor) else torch.tensor(audio)
+            result = model.transcribe(audio_tensor, **transcribe_options)
+            detected_language = result.get('language')
             logger.info(f"Transcribed with specified language: {language}")
         else:
-            logger.info(f"Transcribed with auto-detected language: {detected_language}")
+            # Auto-detect mode: Whisper's high-level API detects language ONCE from
+            # the first ~30s and applies it to the whole file. For audio that
+            # code-switches between languages (e.g. Hindi + English), this forces
+            # the wrong language onto later segments and produces garbled/hallucinated
+            # text. Re-detecting per chunk fixes that, and as a side effect bounds
+            # the worst-case retry cost to a single chunk instead of the whole file.
+            result = _transcribe_with_per_chunk_language_detection(
+                model, audio, transcribe_options, chunk_duration=30
+            )
+            detected_language = result.get('language')
+            logger.info(f"Transcribed with per-chunk auto-detected language(s): {result.get('languages_detected')}")
     except Exception as e:
         logger.error(f"Error in transcription: {str(e)}")
         # Fallback to English if transcription fails
@@ -219,9 +288,21 @@ def transcribe_audio(audio_file: str, language: Optional[str] = None) -> Dict[st
                     "end": word.get("end", 0)
                 }
 
-                # Add probability if available
+                # Add probability if available, else fallback to segment confidence
                 if "probability" in word:
                     word_info["confidence"] = round(100 * word.get("probability", 0), 2)
+                elif "confidence" in word:
+                    word_info["confidence"] = word.get("confidence")
+                else:
+                    word_info["confidence"] = segment_info.get("confidence", 85.0)
+
+                w_conf = word_info["confidence"]
+                if w_conf >= 90:
+                    word_info["confidence_level"] = "high"
+                elif w_conf >= 65:
+                    word_info["confidence_level"] = "medium"
+                else:
+                    word_info["confidence_level"] = "low"
 
                 words_with_confidence.append(word_info)
 
@@ -509,7 +590,10 @@ def format_conversation(diarization_result, transcription_segments):
             "speaker": assigned_speaker or "UNKNOWN",
             "text": segment["text"].strip(),
             "start_time": seg_start,
-            "end_time": seg_end
+            "end_time": seg_end,
+            "start": seg_start,
+            "end": seg_end,
+            "words": segment.get("words", [])
         }
 
         # Add confidence if available
@@ -618,6 +702,18 @@ def process_audio_file(audio_file_path: str, language: Optional[str] = None) -> 
         diarization_result = diarize_audio(audio_file_path)
         metrics['step_times']['diarization'] = time.time() - step_start
 
+        # Store raw Whisper transcription (before diarization merge) for UI display
+        metrics['raw_transcription'] = [{
+            'id': seg.get('id', i),
+            'start': seg.get('start', 0),
+            'end': seg.get('end', 0),
+            'start_formatted': format_time(seg.get('start', 0)),
+            'text': seg.get('text', '').strip(),
+            'confidence': seg.get('confidence'),
+            'confidence_level': seg.get('confidence_level'),
+            'words': seg.get('words', []),
+        } for i, seg in enumerate(transcription_segments)]
+
         # Format with timing
         step_start = time.time()
         conversation_data = format_conversation(diarization_result, transcription_segments)
@@ -648,19 +744,25 @@ def process_audio_file(audio_file_path: str, language: Optional[str] = None) -> 
         metrics['total_time'] = time.time() - start_total
         metrics['formatted_transcript'] = formatted_transcript
 
-        # Enhanced transcript with confidence scores
+        # Enhanced transcript with confidence scores and word-level metadata
         metrics['transcript'] = [{
             'speaker': seg['speaker'],
             'text': seg['text'],
             'start_time': seg['start_time'],
             'end_time': seg['end_time'],
+            'start': seg.get('start', seg['start_time']),
+            'end': seg.get('end', seg['end_time']),
             'start_time_formatted': format_time(seg['start_time']),
             'end_time_formatted': format_time(seg['end_time']),
-            'confidence': seg.get('confidence', None),  # Include confidence if available
-            'confidence_level': seg.get('confidence_level', None),  # Include confidence level
-            'segments': seg.get('segments', []),  # Include detailed segment info
+            'confidence': seg.get('confidence', None),
+            'confidence_level': seg.get('confidence_level', None),
+            'words': seg.get('words', []),
+            'segments': seg.get('segments', []),
             'language': metrics['language']
         } for seg in conversation_data]
+
+        # Explicit top-level segments key for API JSON payloads
+        metrics['segments'] = metrics['transcript']
 
         # Final check to confirm the language is being properly returned
         logger.info(f"Final language being returned: {metrics['language']}")

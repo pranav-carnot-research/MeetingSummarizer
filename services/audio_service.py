@@ -154,6 +154,19 @@ def process_long_audio(
                 segment["start_time_formatted"] = format_time(segment["start_time"])
                 segment["end_time_formatted"] = format_time(segment["end_time"])
                 all_conversation_data.append(segment)
+
+            # Adjust timestamps for raw transcription too
+            if "raw_transcription" in chunk_result:
+                for segment in chunk_result["raw_transcription"]:
+                    segment["start"] += chunk["start_time"]
+                    segment["end"] += chunk["start_time"]
+                    segment["start_formatted"] = format_time(segment["start"])
+                    # Adjust nested word timestamps if present
+                    if "words" in segment:
+                        for w in segment["words"]:
+                            w["start"] += chunk["start_time"]
+                            w["end"] += chunk["start_time"]
+                    all_transcriptions.append(segment)
             
             # Clean up temporary file
             try:
@@ -165,6 +178,7 @@ def process_long_audio(
             
         # Sort by start time
         all_conversation_data.sort(key=lambda x: x["start_time"])
+        all_transcriptions.sort(key=lambda x: x["start"])
         
         # Create formatted transcript with confidence indicators
         formatted_transcript = []
@@ -238,6 +252,7 @@ def process_long_audio(
         metrics['total_time'] = time.time() - start_total
         metrics['formatted_transcript'] = formatted_transcript
         metrics['transcript'] = all_conversation_data
+        metrics['raw_transcription'] = all_transcriptions
         
         if progress_callback:
             progress_callback(100, "Processing complete")

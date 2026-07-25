@@ -25,6 +25,8 @@ def get_llm(temperature: float = 0, model_name: Optional[str] = None, purpose: s
         return get_openai_llm(temperature, model_name)
     elif provider == "ollama":
         return get_ollama_llm(temperature, model_name, purpose)
+    elif provider == "groq":
+        return get_groq_llm(temperature, model_name)
     else:
         raise ValueError(f"Unsupported LLM provider: {provider}")
 
@@ -39,6 +41,20 @@ def get_openai_llm(temperature: float = 0, model_name: Optional[str] = None):
         )
     except ImportError:
         logger.error("langchain_openai not installed. Run: pip install langchain-openai")
+        raise
+
+def get_groq_llm(temperature: float = 0, model_name: Optional[str] = None):
+    """Get a Groq LLM instance"""
+    try:
+        from langchain_groq import ChatGroq
+
+        return ChatGroq(
+            model=model_name or settings.GROQ_MODEL,
+            api_key=settings.GROQ_API_KEY,
+            temperature=temperature
+        )
+    except ImportError:
+        logger.error("langchain_groq not installed. Run: pip install langchain-groq")
         raise
 
 def get_ollama_llm(temperature: float = 0, model_name: Optional[str] = None, purpose: str = "general", format_schema: Optional[Dict] = None):

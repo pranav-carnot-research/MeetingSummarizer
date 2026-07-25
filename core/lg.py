@@ -569,7 +569,6 @@ Participants: {participants}
                 key_points=global_summary["key_points"],
                 decisions=global_summary["decisions"]
             )
-            
             action_items = []
             for item in global_summary["action_items"]:
                 action_items.append(ActionItem(

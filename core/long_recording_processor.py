@@ -204,10 +204,6 @@ def diarize_audio_chunk(chunk_path, offset_seconds=0):
     # Replace with your own HuggingFace token or use environment variable
     hf_token = os.environ.get("HUGGINGFACE_TOKEN", "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")
     
-    diarization_pipeline = Pipeline.from_pretrained(
-        "pyannote/speaker-diarization-3.1",
-        token=hf_token)
-    
     # Use GPU if available (support CUDA and macOS MPS)
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -216,7 +212,16 @@ def diarize_audio_chunk(chunk_path, offset_seconds=0):
         logger.info("Using Apple Silicon GPU (MPS) for chunk diarization")
     else:
         device = torch.device("cpu")
-    diarization_pipeline.to(device)
+
+    cache_key = "pyannote/speaker-diarization-3.1"
+    if cache_key not in _pyannote_cache:
+        logger.info(f"Loading diarization pipeline for chunk processor: {cache_key}")
+        pipeline = Pipeline.from_pretrained(cache_key, token=hf_token)
+        pipeline.to(device)
+        _pyannote_cache[cache_key] = pipeline
+    else:
+        logger.info("Using cached diarization pipeline for chunk")
+    diarization_pipeline = _pyannote_cache[cache_key]
     
     with ProgressHook() as hook:
         diarization_result = diarization_pipeline(chunk_path, hook=hook)

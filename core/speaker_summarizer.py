@@ -1,6 +1,7 @@
 from services.llm_service import get_llm, create_chat_prompt_template, create_output_parser, get_ollama_llm
 import logging
 import json
+import re
 from config import settings
 
 def generate_speaker_summaries(transcript, participants, language=None):
@@ -15,28 +16,54 @@ def generate_speaker_summaries(transcript, participants, language=None):
     Returns:
         dict: Dictionary mapping each speaker to their summary
     """
-    # Initialize the LLM
+    # Initialize the LLM (single init)
     llm = get_llm(temperature=0, purpose="summarization")
     
-    # Group transcript segments by speaker
-    speaker_contributions = {}
+    # Normalize participants list
+    norm_participants = [str(p).strip() for p in participants if p and str(p).strip()]
+    if not norm_participants:
+        norm_participants = ["Speaker 1"]
+
+    speaker_contributions = {p: [] for p in norm_participants}
     
-    # Process the transcript to group text by speaker
-    for participant in participants:
-        # Create a pattern to match this speaker's lines
-        speaker_pattern = f"{participant}:"
-        
-        # Find all lines from this speaker
-        speaker_lines = []
-        for line in transcript.split('\n'):
-            if speaker_pattern in line:
-                # Extract just the text (remove speaker prefix)
-                text = line.split(speaker_pattern, 1)[1].strip()
-                speaker_lines.append(text)
-        
-        # Store all this speaker's contributions
-        if speaker_lines:
-            speaker_contributions[participant] = '\n'.join(speaker_lines)
+    # Process the transcript to group text by speaker using robust regex
+    for line in transcript.split('\n'):
+        line_str = line.strip()
+        if not line_str:
+            continue
+            
+        # Match pattern like: "[00:05] Speaker 1: Hello" or "Pranav: Hello" or "Speaker 1 (00:05): Hello"
+        match = re.search(r'^(?:\[.*?\]\s*)?([^:\(\)]+?)(?:\s*\(.*?\))?\s*:\s*(.*)$', line_str)
+        if match:
+            spk_raw = match.group(1).strip()
+            content = match.group(2).strip()
+            
+            matched_spk = None
+            for p in norm_participants:
+                if spk_raw.lower() == p.lower() or p.lower() in spk_raw.lower() or spk_raw.lower() in p.lower():
+                    matched_spk = p
+                    break
+            
+            if not matched_spk:
+                matched_spk = spk_raw
+                if matched_spk not in norm_participants:
+                    norm_participants.append(matched_spk)
+
+            if matched_spk not in speaker_contributions:
+                speaker_contributions[matched_spk] = []
+            if content:
+                speaker_contributions[matched_spk][0:0] = [] # Ensure list exists
+                speaker_contributions[matched_spk].append(content)
+
+    # Join lines for each speaker
+    contributions_map = {spk: "\n".join(lines) for spk, lines in speaker_contributions.items() if lines}
+    
+    # Fallback if regex matching produced no contributions: assign full transcript to first speaker
+    if not contributions_map and transcript.strip():
+        logging.warning("No line-by-line speaker prefix matched. Using fallback transcript assignment.")
+        contributions_map = {norm_participants[0]: transcript.strip()}
+
+    speaker_contributions = contributions_map
     
     # Create prompt without XML tags that confuse smaller models
     system_message = """You are a meeting analyst. Create a JSON summary for each speaker with these fields:
@@ -128,7 +155,7 @@ Contributions: {contributions}"""
                         "questions_raised": [],
                         "brief_summary": str(simple_result.content if hasattr(simple_result, 'content') else simple_result)
                     }
-                except:
+                except Exception:
                     speaker_summaries[speaker] = {
                         "key_contributions": ["Error processing contributions"],
                         "action_items": [],

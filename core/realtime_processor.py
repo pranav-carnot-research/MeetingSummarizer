@@ -19,6 +19,11 @@ import torch
 
 logger = logging.getLogger("realtime-processor")
 
+# Global caches to avoid reloading models on every WebSocket/recording start
+_pipeline_cache = {}
+_emb_model_cache = {}
+_whisper_cache = {}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # RealTimeDiarizer
 # ─────────────────────────────────────────────────────────────────────────────
@@ -83,17 +88,28 @@ class RealTimeDiarizer:
 
             # ── Full diarization pipeline ──
             pipeline_config = Path("./models/speaker-diarization-3.1/config.yaml")
-            self._pipeline = Pipeline.from_pretrained(pipeline_config)
-            self._pipeline.to(device)
-            logger.info("RealTimeDiarizer: diarization pipeline loaded.")
+            pipeline_key = str(pipeline_config)
+            if pipeline_key not in _pipeline_cache:
+                logger.info(f"Loading diarization pipeline for RealTimeDiarizer from disk: {pipeline_key}")
+                pipeline = Pipeline.from_pretrained(pipeline_config)
+                pipeline.to(device)
+                _pipeline_cache[pipeline_key] = pipeline
+            else:
+                logger.info("Using cached diarization pipeline for RealTimeDiarizer")
+            self._pipeline = _pipeline_cache[pipeline_key]
 
             # ── Embedding model ──
             emb_bin = Path("./models/wespeaker-voxceleb-resnet34-LM/pytorch_model.bin")
-            emb_model = Model.from_pretrained(emb_bin)
-            emb_model.eval()
-            emb_model.to(device)
-            self._emb_inference = Inference(emb_model, window="whole")
-            logger.info("RealTimeDiarizer: embedding model loaded.")
+            emb_key = str(emb_bin)
+            if emb_key not in _emb_model_cache:
+                logger.info(f"Loading embedding model for RealTimeDiarizer from disk: {emb_key}")
+                emb_model = Model.from_pretrained(emb_bin)
+                emb_model.eval()
+                emb_model.to(device)
+                _emb_model_cache[emb_key] = Inference(emb_model, window="whole")
+            else:
+                logger.info("Using cached embedding model for RealTimeDiarizer")
+            self._emb_inference = _emb_model_cache[emb_key]
 
             self._models_ready = True
 
@@ -125,10 +141,10 @@ class RealTimeDiarizer:
         with self._segments_lock:
             return list(self.live_segments)
 
-    def diarize_chunk(self, wav_path: str, text: str):
+    def diarize_chunk(self, wav_path: str, text: str, confidence: float = None, words: list = None):
         """
         Diarize the exact transcribed chunk, match the speaker, 
-        and append a finished segment with text.
+        and append a finished segment with text and confidence scores.
         """
         from pyannote.core import Segment
 
@@ -136,39 +152,35 @@ class RealTimeDiarizer:
             return
 
         try:
-            import soundfile as sf
-            info = sf.info(wav_path)
-            duration = info.duration
-
-            # 1. Run diarization pipeline on this chunk
-            diarize_output = self._pipeline(wav_path)
-            annotation = diarize_output.speaker_diarization
-
-            best_turn = None
-            max_duration = 0.0
-            for turn, _, local_spk in annotation.itertracks(yield_label=True):
-                if turn.duration > max_duration:
-                    max_duration = turn.duration
-                    best_turn = turn
-
             global_label = None
-            if best_turn is not None and max_duration >= 0.5:
+            if self._pipeline is not None and self._emb_inference is not None:
                 try:
-                    # Clip boundaries to prevent pyannote rounding issues beyond file duration
-                    clipped_turn = Segment(best_turn.start, min(best_turn.end, duration - 0.01))
-                    if clipped_turn.duration >= 0.5:
-                        emb = self._emb_inference.crop(wav_path, clipped_turn)
-                        global_label = self._match_or_create_speaker(emb)
-                except Exception as emb_exc:
-                    logger.warning(f"Embedding crop failed: {emb_exc}")
+                    import soundfile as sf
+                    info = sf.info(wav_path)
+                    duration = info.duration
 
-            # Fallback to whole file embedding if no turns or crop failed
-            if global_label is None:
-                try:
-                    emb = self._emb_inference(wav_path)
-                    global_label = self._match_or_create_speaker(emb)
-                except Exception as emb_exc:
-                    logger.warning(f"Whole-chunk embedding failed: {emb_exc}")
+                    # 1. Run diarization pipeline on this chunk
+                    diarize_output = self._pipeline(wav_path)
+                    annotation = diarize_output.speaker_diarization
+
+                    best_turn = None
+                    max_duration = 0.0
+                    for turn, _, local_spk in annotation.itertracks(yield_label=True):
+                        if turn.duration > max_duration:
+                            max_duration = turn.duration
+                            best_turn = turn
+
+                    if best_turn is not None and max_duration >= 0.3:
+                        clipped_turn = Segment(best_turn.start, min(best_turn.end, duration - 0.01))
+                        if clipped_turn.duration >= 0.3:
+                            emb = self._emb_inference.crop(wav_path, clipped_turn)
+                            global_label = self._match_or_create_speaker(emb)
+
+                    if global_label is None:
+                        emb = self._emb_inference(wav_path)
+                        global_label = self._match_or_create_speaker(emb)
+                except Exception as pyannote_exc:
+                    logger.warning(f"Pyannote diarization warning: {pyannote_exc}")
 
             # Absolute fallback: assign to the last active speaker or Speaker 1
             if global_label is None:
@@ -186,12 +198,26 @@ class RealTimeDiarizer:
                 if self.live_segments and self.live_segments[-1]["speaker"] == global_label:
                     # Stitch text together with a space
                     self.live_segments[-1]["text"] = (self.live_segments[-1]["text"] + " " + text).strip()
+                    # Average confidence
+                    prev_seg = self.live_segments[-1]
+                    if confidence is not None:
+                        if prev_seg.get("confidence") is not None:
+                            prev_seg["confidence"] = round((prev_seg["confidence"] + confidence) / 2, 2)
+                        else:
+                            prev_seg["confidence"] = confidence
+                    # Append words
+                    if words:
+                        if "words" not in prev_seg:
+                            prev_seg["words"] = []
+                        prev_seg["words"].extend(words)
                 else:
                     new_seg = {
                         "speaker": global_label,
                         "color": color,
                         "text": text,
                         "timestamp": ts,
+                        "confidence": confidence,
+                        "words": words or []
                     }
                     self.live_segments.append(new_seg)
 
@@ -216,6 +242,17 @@ class RealTimeDiarizer:
         otherwise register a new speaker and return their label.
         """
         with self._profiles_lock:
+            if not self._speaker_profiles:
+                new_label = "Speaker 1"
+                color = self.SPEAKER_COLORS[0]
+                self._speaker_profiles.append({
+                    "label": new_label,
+                    "embedding": embedding.copy(),
+                    "color": color,
+                })
+                logger.info(f"RealTimeDiarizer: registered {new_label}")
+                return new_label
+
             best_sim = -1.0
             best_label = None
 
@@ -225,16 +262,18 @@ class RealTimeDiarizer:
                     best_sim = sim
                     best_label = profile["label"]
 
-            if best_sim >= self.similarity_threshold:
+            # Adaptive threshold: 0.15 if only 1 speaker registered so far, 0.22 for multi-speaker
+            threshold = 0.15 if len(self._speaker_profiles) == 1 else 0.22
+
+            if best_sim >= threshold:
                 # Update running average embedding for this speaker
                 for profile in self._speaker_profiles:
                     if profile["label"] == best_label:
-                        # Exponential moving average
-                        profile["embedding"] = 0.9 * profile["embedding"] + 0.1 * embedding
+                        profile["embedding"] = 0.85 * profile["embedding"] + 0.15 * embedding
                         break
                 return best_label
 
-            # New speaker
+            # New speaker (requires clear dissimilarity)
             idx = len(self._speaker_profiles) + 1
             new_label = f"Speaker {idx}"
             color = self.SPEAKER_COLORS[(idx - 1) % len(self.SPEAKER_COLORS)]
@@ -243,7 +282,7 @@ class RealTimeDiarizer:
                 "embedding": embedding.copy(),
                 "color": color,
             })
-            logger.info(f"RealTimeDiarizer: registered {new_label} (profiles total: {idx})")
+            logger.info(f"RealTimeDiarizer: registered {new_label} (profiles total: {idx}, best_sim: {best_sim:.2f})")
             return new_label
 
     def _color_for_label(self, label: str) -> str:
@@ -267,7 +306,7 @@ class RealTimeDiarizer:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class RealTimeTranscriber:
-    def __init__(self, sample_rate=16000, chunk_duration=6, model_size="base"):
+    def __init__(self, sample_rate=16000, chunk_duration=6, model_size="small"):
         self.sample_rate = sample_rate
         self.chunk_duration = chunk_duration
         self.chunk_samples = int(sample_rate * chunk_duration)
@@ -276,11 +315,13 @@ class RealTimeTranscriber:
         self.audio_queue = queue.Queue()
         self.is_recording = False
         self.transcript_segments = []
+        self.raw_segments = []  # Structured segment list with word timestamps
         self.full_audio_data = []  # To store the entire recording
 
         self.model = None
         self.record_thread = None
         self.transcribe_thread = None
+        self._session_start_time = 0.0
 
         # Optional: reference to a RealTimeDiarizer to feed text into
         self.diarizer: RealTimeDiarizer | None = None
@@ -290,12 +331,16 @@ class RealTimeTranscriber:
             raise RuntimeError("sounddevice is not installed or available.")
 
         if self.model is None:
-            logger.info(f"Loading Whisper '{self.model_size}' model for real-time transcription...")
-            self.model = whisper.load_model(self.model_size)
+            if self.model_size not in _whisper_cache:
+                logger.info(f"Loading Whisper '{self.model_size}' model for real-time transcription...")
+                _whisper_cache[self.model_size] = whisper.load_model(self.model_size)
+            self.model = _whisper_cache[self.model_size]
 
         self.is_recording = True
         self.transcript_segments = []
+        self.raw_segments = []
         self.full_audio_data = []
+        self._session_start_time = time.time()
 
         # Clear queue
         while not self.audio_queue.empty():
@@ -356,13 +401,59 @@ class RealTimeTranscriber:
                         wf.writeframes((audio_data * 32767).astype(np.int16).tobytes())
 
                 try:
-                    result = self.model.transcribe(wav_path, fp16=fp16_supported)
+                    # Enable word timestamps for confidence extraction
+                    transcribe_options = {
+                        "word_timestamps": True,
+                        "fp16": fp16_supported
+                    }
+                    result = self.model.transcribe(wav_path, **transcribe_options)
                     text = result['text'].strip()
                     if text:
                         self.transcript_segments.append(text)
-                        # Feed text into diarizer to align synchronously
+                        
+                        # Process segment confidence & word confidence
+                        segment_conf = None
+                        words_list = []
+                        
+                        if result.get("segments"):
+                            first_seg = result["segments"][0]
+                            # 1. Segment-level confidence
+                            if "avg_logprob" in first_seg:
+                                logprob = first_seg["avg_logprob"]
+                                segment_conf = round(min(100, max(0, 100 + 20 * logprob)), 2)
+                            elif "no_speech_prob" in first_seg:
+                                segment_conf = round(100 * (1 - first_seg["no_speech_prob"]), 2)
+                                
+                            # 2. Word-level confidence
+                            if "words" in first_seg:
+                                for word in first_seg["words"]:
+                                    words_list.append({
+                                        "word": word.get("word", ""),
+                                        "start": word.get("start", 0),
+                                        "end": word.get("end", 0),
+                                        "confidence": round(100 * word.get("probability", 0), 2) if "probability" in word else None
+                                    })
+                        
+                        if segment_conf is None:
+                            segment_conf = 85.0  # Safe default if Whisper fails to report
+                            
+                        # Add to raw segments list
+                        elapsed = time.time() - self._session_start_time
+                        m, s = divmod(int(elapsed), 60)
+                        h, m = divmod(m, 60)
+                        ts_str = f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+                        
+                        self.raw_segments.append({
+                            "text": text,
+                            "confidence": segment_conf,
+                            "confidence_level": "high" if segment_conf >= 90 else ("medium" if segment_conf >= 70 else "low"),
+                            "words": words_list,
+                            "start_formatted": ts_str
+                        })
+                        
+                        # Feed text + confidence into diarizer to align synchronously
                         if self.diarizer is not None:
-                            self.diarizer.diarize_chunk(wav_path, text)
+                            self.diarizer.diarize_chunk(wav_path, text, confidence=segment_conf, words=words_list)
                 except Exception as e:
                     logger.error(f"Whisper transcription error: {e}")
                 finally:
@@ -393,3 +484,117 @@ class RealTimeTranscriber:
         except Exception as e:
             logger.error(f"Error saving full audio: {e}")
             return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WebSocketRealTimeProcessor
+# ─────────────────────────────────────────────────────────────────────────────
+
+class WebSocketRealTimeProcessor:
+    """
+    Real-time streaming processor for WebSocket connections.
+    Receives 16kHz 16-bit Int16 PCM raw audio bytes from browser Web Audio API,
+    transcribes with Whisper, and diarizes with Pyannote in real time.
+    """
+    def __init__(self, sample_rate: int = 16000, model_size: str = "small", language: str = None, chunk_duration: int = 6):
+        self.sample_rate = sample_rate
+        self.model_size = model_size
+        self.language = language if language and language != "auto" else None
+        self.chunk_duration = chunk_duration
+        self.chunk_samples = int(sample_rate * chunk_duration)
+
+        self.diarizer = RealTimeDiarizer(sample_rate=sample_rate)
+        try:
+            self.diarizer.load_models()
+        except Exception as e:
+            logger.warning(f"WebSocketRealTimeProcessor: Diarizer failed to load: {e}")
+
+        self.diarizer.start()
+
+        logger.info(f"Loading Whisper '{self.model_size}' model for WebSocket processor...")
+        if self.model_size not in _whisper_cache:
+            _whisper_cache[self.model_size] = whisper.load_model(self.model_size)
+        self.model = _whisper_cache[self.model_size]
+
+        self.pcm_bytes_buffer = bytearray()  # full session audio, for save_final_recording
+        self._pending_samples = np.array([], dtype=np.int16)  # unprocessed audio since last full chunk
+        self._session_start = time.time()
+
+    def process_audio_chunk(self, chunk_bytes: bytes) -> list:
+        if not chunk_bytes:
+            return self.diarizer.get_live_segments()
+
+        try:
+            import soundfile as sf
+            self.pcm_bytes_buffer.extend(chunk_bytes)
+
+            new_samples = np.frombuffer(chunk_bytes, dtype=np.int16)
+            self._pending_samples = np.concatenate([self._pending_samples, new_samples])
+
+            fp16_supported = torch.cuda.is_available()
+
+            # Transcribe fixed, self-contained chunks (matches RealTimeTranscriber's approach)
+            while len(self._pending_samples) >= self.chunk_samples:
+                chunk_pcm = self._pending_samples[:self.chunk_samples]
+                self._pending_samples = self._pending_samples[self.chunk_samples:]
+
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                    wav_path = tmp.name
+
+                try:
+                    sf.write(wav_path, chunk_pcm, self.sample_rate, subtype='PCM_16')
+
+                    transcribe_opts = {
+                        "word_timestamps": True,
+                        "fp16": fp16_supported
+                    }
+                    if self.language:
+                        transcribe_opts["language"] = self.language
+
+                    result = self.model.transcribe(wav_path, **transcribe_opts)
+                    text = result.get('text', '').strip()
+
+                    if text:
+                        segment_conf = 85.0
+                        words_list = []
+                        if result.get("segments"):
+                            first_seg = result["segments"][0]
+                            if "avg_logprob" in first_seg:
+                                segment_conf = round(min(100, max(0, 100 + 20 * first_seg["avg_logprob"])), 2)
+                            elif "no_speech_prob" in first_seg:
+                                segment_conf = round(100 * (1 - first_seg["no_speech_prob"]), 2)
+
+                            if "words" in first_seg:
+                                for w in first_seg["words"]:
+                                    words_list.append({
+                                        "word": w.get("word", ""),
+                                        "start": w.get("start", 0),
+                                        "end": w.get("end", 0),
+                                        "confidence": round(100 * w.get("probability", 0), 2) if "probability" in w else None
+                                    })
+
+                        if self.diarizer and self.diarizer.is_running:
+                            self.diarizer.diarize_chunk(wav_path, text, confidence=segment_conf, words=words_list)
+                finally:
+                    try:
+                        os.unlink(wav_path)
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.error(f"Error processing WebSocket PCM chunk: {e}")
+
+        return self.diarizer.get_live_segments()
+
+    def save_final_recording(self, output_filepath: str) -> bool:
+        """Save full accumulated PCM buffer to a WAV file."""
+        if not self.pcm_bytes_buffer:
+            return False
+        try:
+            import soundfile as sf
+            pcm_samples = np.frombuffer(bytes(self.pcm_bytes_buffer), dtype=np.int16)
+            sf.write(output_filepath, pcm_samples, self.sample_rate, subtype='PCM_16')
+            return True
+        except Exception as e:
+            logger.error(f"Error saving WebSocket final recording: {e}")
+            return False
+

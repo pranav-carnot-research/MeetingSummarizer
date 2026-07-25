@@ -1,0 +1,77 @@
+{
+  "reference_text": "Alright everyone, I'm Snazal, and I will be leading this thing. So today we need to finalize the smart notification feature that has been on our roadmap for the last two sprints. We have three main things to cover: the backend architecture for notification delivery, which Richard will be doing; the frontend UI for the notification center, which Pawan will be doing; and the QA testing strategy, which Aniket will be doing. So let's try to get through this in about 10 minutes. So, Richard? Yeah, everyone, I'm Richard. Sounds good. Before we dive in, I wanted to mention that I've already set up the base infrastructure for the notification service. It's using a message queue with Redis for real-time push notifications. The basic producer-consumer pattern is working in our dev environment. And I think Pawan will take over. Hello Snazal, I am Pawan. Nice, that's great to... nice, that... that's great to hear. On my end, I have been working on the notification bell icon and the drop-down panel. I have a prototype ready in Figma that I can show everyone after this meeting. Yeah, sounds perfect. I have drafted a test plan document that covers both functional and performance testing. I'll share it in Slack after the meeting so everyone can review it. So, we'll start now the technical discussion and decision-making. Okay. So, great. Let's start with the backend. Richard, walk us through the notification delivery flow. How will notifications reach the user in real time? Sure. So the flow is, when a trigger event happens, like a new comment on a task, the backend creates a notification record in PostgreSQL and simultaneously publishes a message to the Redis channel. The frontend is connected via WebSockets, and our WebSocket server is subscribed to that Redis channel. So the notification gets pushed to the user's browser in under 200 milliseconds. For users who are offline, the notifications will be waiting in the database when they log in. Question about the WebSocket connection. Should we use socket.io or stick with the native WebSockets? I have used socket.io before, and it handles reconnection and fallback to long polling automatically, which would save us development time. I actually think we should go with native WebSockets. Socket.io adds unnecessary overhead, and the library is over 200 kilobytes. We can write a simple reconnection wrapper ourselves in about 50 lines of code. It's cleaner, and we have full control. I disagree on that. The reconnection... The reconnection logic in socket.io handles edge cases like exponential backoff, connection state management, and automatic room rejoining. Writing that from scratch is risky and could introduce bugs. Plus, 200 kilobytes is negligible when Gzipped. Okay, so this is a good debate now. And Richard, you should not mess up my experiment, please! Let's go with the socket.io for now, since reliability matters more than bundle size for notifications. We can always swap it out later if performance becomes an issue. Richard, are you okay with the decision? No, I'm not okay. I'm not okay with the decision, Snazal. I'll integrate... but yeah, okay, since you guys are saying, I will accept. And I'll integrate socket.io on the backend side. I can have the WebSocket server ready by Wednesday. Okay, Pawan, tell us about the notification center UI. What are you thinking for the design? So the notification center will have three main parts. First, there's the bell icon in the top navigation bar with an unread bell count badge. Second, when you click the bell, a drop-down panel slides down showing the latest 20 notifications, grouped by today, yesterday, and older. Third, there's a \"Mark all as read\" button and individual swipe-to-dismiss on mobile. Each notification card will show the sender avatar, a brief message preview, and a relative timestamp, like \"5 minutes ago.\" Will there be any notification preferences? Like, can users choose which type of notifications they want to receive? That's something we should think about from a testing perspective, too. Good point. For version 1, we'll have a simple settings page where users can toggle notifications on or off for four categories: comments, mentions, task assignments, and deadline reminders. We can add more granular controls in version 2. Okay, so I like that approach. Keep it simple for the first release. Pawan, can you have frontend notification components ready by Thursday? Thursday is tight but doable. I'll prioritize the bell icon and drop-down panel first, and the settings page can come on Friday if needed. Okay, so what I thought... key... I'll call the DevOps about the scaling up of staging by Tuesday. Alright everyone, I think we have a solid plan. Our next check-in will be on Thursday at the same time to review the progress. Any final questions? Any final questions to anyone? No, fine. Thank you. Great meeting, adjourned. Thanks everyone!",
+  "turns": [
+    {
+      "speaker": "Snazal",
+      "text": "Alright everyone, I'm Snazal, and I will be leading this thing. So today we need to finalize the smart notification feature that has been on our roadmap for the last two sprints. We have three main things to cover: the backend architecture for notification delivery, which Richard will be doing; the frontend UI for the notification center, which Pawan will be doing; and the QA testing strategy, which Aniket will be doing. So let's try to get through this in about 10 minutes. So, Richard?"
+    },
+    {
+      "speaker": "Richard",
+      "text": "Yeah, everyone, I'm Richard. Sounds good. Before we dive in, I wanted to mention that I've already set up the base infrastructure for the notification service. It's using a message queue with Redis for real-time push notifications. The basic producer-consumer pattern is working in our dev environment. And I think Pawan will take over."
+    },
+    {
+      "speaker": "Pawan",
+      "text": "Hello Snazal, I am Pawan. Nice, that's great to... nice, that... that's great to hear. On my end, I have been working on the notification bell icon and the drop-down panel. I have a prototype ready in Figma that I can show everyone after this meeting."
+    },
+    {
+      "speaker": "Aniket",
+      "text": "Yeah, sounds perfect. I have drafted a test plan document that covers both functional and performance testing. I'll share it in Slack after the meeting so everyone can review it. So, we'll start now the technical discussion and decision-making. Okay. So, great."
+    },
+    {
+      "speaker": "Snazal",
+      "text": "Let's start with the backend. Richard, walk us through the notification delivery flow. How will notifications reach the user in real time?"
+    },
+    {
+      "speaker": "Richard",
+      "text": "Sure. So the flow is, when a trigger event happens, like a new comment on a task, the backend creates a notification record in PostgreSQL and simultaneously publishes a message to the Redis channel. The frontend is connected via WebSockets, and our WebSocket server is subscribed to that Redis channel. So the notification gets pushed to the user's browser in under 200 milliseconds. For users who are offline, the notifications will be waiting in the database when they log in."
+    },
+    {
+      "speaker": "Pawan",
+      "text": "Question about the WebSocket connection. Should we use socket.io or stick with the native WebSockets? I have used socket.io before, and it handles reconnection and fallback to long polling automatically, which would save us development time."
+    },
+    {
+      "speaker": "Richard",
+      "text": "I actually think we should go with native WebSockets. Socket.io adds unnecessary overhead, and the library is over 200 kilobytes. We can write a simple reconnection wrapper ourselves in about 50 lines of code. It's cleaner, and we have full control."
+    },
+    {
+      "speaker": "Pawan",
+      "text": "I disagree on that. The reconnection... The reconnection logic in socket.io handles edge cases like exponential backoff, connection state management, and automatic room rejoining. Writing that from scratch is risky and could introduce bugs. Plus, 200 kilobytes is negligible when Gzipped."
+    },
+    {
+      "speaker": "Snazal",
+      "text": "Okay, so this is a good debate now. And Richard, you should not mess up my experiment, please! Let's go with the socket.io for now, since reliability matters more than bundle size for notifications. We can always swap it out later if performance becomes an issue. Richard, are you okay with the decision?"
+    },
+    {
+      "speaker": "Richard",
+      "text": "No, I'm not okay. I'm not okay with the decision, Snazal. I'll integrate... but yeah, okay, since you guys are saying, I will accept. And I'll integrate socket.io on the backend side. I can have the WebSocket server ready by Wednesday."
+    },
+    {
+      "speaker": "Snazal",
+      "text": "Okay, Pawan, tell us about the notification center UI. What are you thinking for the design?"
+    },
+    {
+      "speaker": "Pawan",
+      "text": "So the notification center will have three main parts. First, there's the bell icon in the top navigation bar with an unread bell count badge. Second, when you click the bell, a drop-down panel slides down showing the latest 20 notifications, grouped by today, yesterday, and older. Third, there's a \"Mark all as read\" button and individual swipe-to-dismiss on mobile. Each notification card will show the sender avatar, a brief message preview, and a relative timestamp, like \"5 minutes ago.\""
+    },
+    {
+      "speaker": "Aniket",
+      "text": "Will there be any notification preferences? Like, can users choose which type of notifications they want to receive? That's something we should think about from a testing perspective, too."
+    },
+    {
+      "speaker": "Pawan",
+      "text": "Good point. For version 1, we'll have a simple settings page where users can toggle notifications on or off for four categories: comments, mentions, task assignments, and deadline reminders. We can add more granular controls in version 2."
+    },
+    {
+      "speaker": "Snazal",
+      "text": "Okay, so I like that approach. Keep it simple for the first release. Pawan, can you have frontend notification components ready by Thursday?"
+    },
+    {
+      "speaker": "Pawan",
+      "text": "Thursday is tight but doable. I'll prioritize the bell icon and drop-down panel first, and the settings page can come on Friday if needed."
+    },
+    {
+      "speaker": "Snazal",
+      "text": "Okay, so what I thought... key... I'll call the DevOps about the scaling up of staging by Tuesday. Alright everyone, I think we have a solid plan. Our next check-in will be on Thursday at the same time to review the progress. Any final questions? Any final questions to anyone? No, fine. Thank you. Great meeting, adjourned. Thanks everyone!"
+    }
+  ]
+}

@@ -1,48 +1,78 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>On-Premise Meeting Summarizer</title>
+    <title>Meeting Summarizer — AI Transcription & Diarization</title>
+    <!-- Google Fonts: Inter & Fira Code -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@300;400;500;600;700&display=swap"
+        rel="stylesheet">
+
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/main.css">
+    <link rel="stylesheet" href="/static/css/main.css?v=4.0">
 </head>
+
 <body>
-    <div class="container mt-4">
-        <div class="row">
+    <div class="container">
+
+        <!-- Premium SaaS Navbar -->
+        <header class="app-navbar">
+            <a href="/" class="app-brand">
+                <div class="app-brand-logo">M</div>
+                <span class="app-brand-name">MeetingSummarizer</span>
+            </a>
+        </header>
+
+        <!-- Lead section -->
+        <div class="row mb-4">
             <div class="col-12">
-                <h1 class="mb-4">On-Premise Meeting Summarizer</h1>
-                <p class="lead">Convert meeting recordings or transcripts into concise summaries and actionable tasks</p>
+                <p class="lead mb-0">Convert audio files, real-time speech, or pasted transcripts into structured
+                    summaries and actionable tasks instantly.</p>
             </div>
         </div>
 
+        <!-- Input Tab Section -->
         <div class="row mb-4">
             <div class="col-12">
                 <div class="card">
                     <div class="card-header">
                         <ul class="nav nav-tabs card-header-tabs" id="inputTabs" role="tablist">
                             <li class="nav-item" role="presentation">
-                                <button class="nav-link active" id="audio-tab" data-bs-toggle="tab" data-bs-target="#audio" type="button" role="tab" aria-controls="audio" aria-selected="true">Upload Audio</button>
+                                <button class="nav-link active" id="audio-tab" data-bs-toggle="tab"
+                                    data-bs-target="#audio" type="button" role="tab" aria-controls="audio"
+                                    aria-selected="true">Upload Audio</button>
                             </li>
                             <li class="nav-item" role="presentation">
-                                <button class="nav-link" id="record-tab" data-bs-toggle="tab" data-bs-target="#record" type="button" role="tab" aria-controls="record" aria-selected="false">Real-Time Audio</button>
+                                <button class="nav-link" id="record-tab" data-bs-toggle="tab" data-bs-target="#record"
+                                    type="button" role="tab" aria-controls="record" aria-selected="false">Real-Time
+                                    Audio</button>
                             </li>
                             <li class="nav-item" role="presentation">
-                                <button class="nav-link" id="paste-tab" data-bs-toggle="tab" data-bs-target="#paste" type="button" role="tab" aria-controls="paste" aria-selected="false">Paste Text</button>
+                                <button class="nav-link" id="paste-tab" data-bs-toggle="tab" data-bs-target="#paste"
+                                    type="button" role="tab" aria-controls="paste" aria-selected="false">Paste
+                                    Text</button>
                             </li>
                             <li class="nav-item" role="presentation">
-                                <button class="nav-link" id="upload-tab" data-bs-toggle="tab" data-bs-target="#upload" type="button" role="tab" aria-controls="upload" aria-selected="false">Upload Text</button>
+                                <button class="nav-link" id="upload-tab" data-bs-toggle="tab" data-bs-target="#upload"
+                                    type="button" role="tab" aria-controls="upload" aria-selected="false">Upload
+                                    Text</button>
                             </li>
                         </ul>
                     </div>
                     <div class="card-body">
                         <div class="tab-content" id="inputTabsContent">
-                            <!-- Audio Upload Tab -->
-                            <div class="tab-pane fade show active" id="audio" role="tabpanel" aria-labelledby="audio-tab">
+
+                            <!-- Upload Audio Tab -->
+                            <div class="tab-pane fade show active" id="audio" role="tabpanel"
+                                aria-labelledby="audio-tab">
                                 <form id="audioForm" enctype="multipart/form-data">
                                     <div class="row mb-3">
                                         <div class="col-md-6">
-                                            <label for="audioLanguage" class="form-label">Select Audio Language</label>
+                                            <label for="audioLanguage" class="form-label">Audio Language</label>
                                             <select class="form-select" id="audioLanguage" name="language">
                                                 <option value="auto" selected>Auto-detect</option>
                                                 <option value="en">English</option>
@@ -56,43 +86,59 @@
                                                 <option value="ar">Arabic</option>
                                             </select>
                                         </div>
-                                        <div class="col-md-6 d-flex align-items-end">
-                                            <div class="form-check">
-                                                <input class="form-check-input" type="checkbox" id="isLongRecording" name="is_long_recording">
-                                                <label class="form-check-label" for="isLongRecording">
-                                                    This is a long recording (>15 minutes)
-                                                </label>
-                                            </div>
-                                        </div>
                                     </div>
                                     <div class="mb-3">
-                                        <label for="audioFile" class="form-label">Upload Meeting Recording</label>
-                                        <input class="form-control" type="file" id="audioFile" name="file" accept=".wav,.mp3,.m4a">
-                                        <div class="form-text">Upload an audio file of your meeting (WAV, MP3, M4A formats supported)</div>
+                                        <label for="audioFile" class="form-label">Meeting Audio File</label>
+                                        <input class="form-control" type="file" id="audioFile" name="file"
+                                            accept=".wav,.mp3,.m4a">
+                                        <div class="form-text">Supported formats: WAV, MP3, M4A</div>
                                     </div>
-                                    <button type="submit" class="btn btn-primary" id="processAudioBtn">Process Audio</button>
+                                    <button type="submit" class="btn btn-primary" id="processAudioBtn">Process Audio
+                                        File</button>
                                 </form>
-                                
+
                                 <!-- Processing Status (hidden initially) -->
                                 <div id="audioProcessingStatus" class="mt-4 d-none">
-                                    <h5>Processing Audio...</h5>
-                                    <div class="progress mb-3">
-                                        <div class="progress-bar progress-bar-striped progress-bar-animated" id="audioProgressBar" role="progressbar" style="width: 0%"></div>
+                                    <p class="form-label mb-2">Processing Audio...</p>
+                                    <div class="progress mb-2">
+                                        <div class="progress-bar progress-bar-striped progress-bar-animated"
+                                            id="audioProgressBar" role="progressbar" style="width: 0%"></div>
                                     </div>
-                                    <p id="audioStatusText">Starting audio processing...</p>
+                                    <p id="audioStatusText" class="text-muted small">Starting audio processing...</p>
                                 </div>
-                                
+
                                 <!-- Transcript Preview (hidden initially) -->
                                 <div id="transcriptPreview" class="mt-4 d-none">
-                                    <h5>Transcript Preview</h5>
-                                    <div class="card">
-                                        <div class="card-body">
-                                            <pre id="transcriptPreviewText" class="mb-0" style="max-height: 300px; overflow-y: auto;"></pre>
+                                    <div class="d-flex justify-content-between align-items-center mb-3">
+                                        <h5 class="mb-0"
+                                            style="font-size: 0.8125rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-light);">
+                                            Transcript Preview</h5>
+                                        <div class="d-flex gap-2 align-items-center flex-wrap">
+                                            <span class="badge bg-success" title="High confidence words (90%+)">✓ High
+                                                (&ge;90%)</span>
+                                            <span class="badge bg-primary" title="Words auto-corrected using glossary">✨
+                                                Glossary Fixed</span>
+                                            <span class="badge bg-warning text-dark"
+                                                title="Medium confidence words (65-89%)">~ Medium (65-89%)</span>
+                                            <span class="badge bg-danger"
+                                                title="Low confidence words (<65%) - Click to listen & edit">? Low
+                                                (&lt;65%)</span>
+                                            <span class="badge"
+                                                style="background-color: var(--c-high-bg) !important; color: var(--c-high-text) !important; border: 1px solid var(--c-high-border) !important;"
+                                                title="Human verified words">✓ Verified</span>
                                         </div>
                                     </div>
-                                    <div class="mt-3">
-                                        <button type="button" class="btn btn-success" id="summarizeAudioBtn">Generate Summary</button>
+
+                                    <!-- Audio Player for Click-to-Play Word Sync -->
+                                    <audio id="meetingAudioPlayer" controls class="w-100 mb-3 d-none"></audio>
+
+                                    <div class="card mb-3">
+                                        <div class="card-body p-3">
+                                            <div id="transcriptPreviewText"></div>
+                                        </div>
                                     </div>
+                                    <button type="button" class="btn btn-success" id="summarizeAudioBtn">Generate
+                                        Summary</button>
                                 </div>
                             </div>
 
@@ -100,7 +146,7 @@
                             <div class="tab-pane fade" id="record" role="tabpanel" aria-labelledby="record-tab">
                                 <div class="row mb-3">
                                     <div class="col-md-6">
-                                        <label for="recordLanguage" class="form-label">Select Audio Language</label>
+                                        <label for="recordLanguage" class="form-label">Audio Language</label>
                                         <select class="form-select" id="recordLanguage">
                                             <option value="auto" selected>Auto-detect</option>
                                             <option value="en">English</option>
@@ -109,64 +155,95 @@
                                             <option value="fr">French</option>
                                         </select>
                                     </div>
-                                    <div class="col-md-6 d-flex align-items-end">
-                                        <div class="form-check">
-                                            <input class="form-check-input" type="checkbox" id="recordIsLong">
-                                            <label class="form-check-label" for="recordIsLong">
-                                                This is a long recording (>15 minutes)
-                                            </label>
-                                        </div>
-                                    </div>
                                 </div>
-                                
-                                <div class="d-flex flex-column align-items-center justify-content-center p-4 border rounded-3 bg-light mb-3">
-                                    <div id="recordingTimer" class="fs-1 fw-bold text-danger mb-3">00:00</div>
-                                    <div class="d-flex gap-2">
-                                        <button type="button" class="btn btn-danger btn-lg" id="startRecordBtn">🎙️ Start Recording</button>
-                                        <button type="button" class="btn btn-secondary btn-lg d-none" id="stopRecordBtn">🛑 Stop Recording</button>
+
+                                <div class="record-zone mb-3">
+                                    <div class="d-flex align-items-center justify-content-center gap-2 mb-3">
+                                        <span id="liveBadge"
+                                            class="badge bg-danger rounded-pill d-none animate-pulse">🔴 LIVE
+                                            STREAMING</span>
+                                        <div id="recordingTimer">00:00</div>
                                     </div>
-                                    <div id="recordStatus" class="mt-3 text-muted">Ready to record. Permission will be requested.</div>
+                                    <div class="d-flex gap-2 justify-content-center">
+                                        <button type="button" class="btn btn-danger" id="startRecordBtn">🎙️ Start
+                                            Recording</button>
+                                        <button type="button" class="btn btn-secondary d-none" id="stopRecordBtn">🛑
+                                            Stop Recording</button>
+                                    </div>
+                                    <div id="recordStatus" class="mt-3 text-muted text-center">Ready to record.
+                                        Permission will be requested.</div>
+                                </div>
+
+                                <!-- Live Real-Time Output Container -->
+                                <div id="liveStreamContainer" class="mt-3 p-3 d-none">
+                                    <div
+                                        class="d-flex justify-content-between align-items-center mb-2 border-bottom pb-2 border-secondary">
+                                        <h6 class="mb-0 text-success">⚡ Live Real-Time Transcript & Diarization</h6>
+                                        <small id="liveStreamStatus" class="text-muted">Listening...</small>
+                                    </div>
+                                    <div id="liveStreamContent">
+                                        <em class="text-muted">Speak into microphone... Live transcribed text will
+                                            appear here.</em>
+                                    </div>
                                 </div>
 
                                 <div id="recordPlaybackSection" class="mt-3 d-none">
-                                    <h5>Recorded Audio Preview</h5>
+                                    <label class="form-label">Recorded Audio Playback</label>
                                     <audio id="recordedAudioPlayback" class="w-100 mb-3" controls></audio>
-                                    <button type="button" class="btn btn-success" id="processRecordedBtn">Process Recorded Audio</button>
                                 </div>
 
                                 <!-- Processing Status (hidden initially) -->
                                 <div id="recordProcessingStatus" class="mt-4 d-none">
-                                    <h5>Processing Audio...</h5>
-                                    <div class="progress mb-3">
-                                        <div class="progress-bar progress-bar-striped progress-bar-animated" id="recordProgressBar" role="progressbar" style="width: 0%"></div>
+                                    <p class="form-label mb-2">Processing Audio...</p>
+                                    <div class="progress mb-2">
+                                        <div class="progress-bar progress-bar-striped progress-bar-animated"
+                                            id="recordProgressBar" role="progressbar" style="width: 0%"></div>
                                     </div>
-                                    <p id="recordStatusText">Starting audio processing...</p>
+                                    <p id="recordStatusText" class="text-muted small">Starting audio processing...</p>
                                 </div>
-                                
+
                                 <!-- Transcript Preview (hidden initially) -->
                                 <div id="recordTranscriptPreview" class="mt-4 d-none">
-                                    <h5>Transcript Preview</h5>
-                                    <div class="card">
-                                        <div class="card-body">
-                                            <pre id="recordTranscriptPreviewText" class="mb-0" style="max-height: 300px; overflow-y: auto;"></pre>
+                                    <div class="d-flex justify-content-between align-items-center mb-3">
+                                        <h5 class="mb-0"
+                                            style="font-size: 0.8125rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-light);">
+                                            Transcript Preview</h5>
+                                        <div class="d-flex gap-2 align-items-center flex-wrap">
+                                            <span class="badge bg-success" title="High confidence words (90%+)">✓ High
+                                                (&ge;90%)</span>
+                                            <span class="badge bg-warning text-dark"
+                                                title="Medium confidence words (65-89%)">~ Medium (65-89%)</span>
+                                            <span class="badge bg-danger"
+                                                title="Low confidence words (<65%) - Click to listen & edit">? Low
+                                                (&lt;65%)</span>
+                                            <span class="badge"
+                                                style="background-color: var(--c-high-bg) !important; color: var(--c-high-text) !important; border: 1px solid var(--c-high-border) !important;"
+                                                title="Human verified words">✓ Verified</span>
                                         </div>
                                     </div>
-                                    <div class="mt-3">
-                                        <button type="button" class="btn btn-success" id="summarizeRecordedBtn">Generate Summary</button>
+                                    <div class="card mb-3">
+                                        <div class="card-body p-3">
+                                            <div id="recordTranscriptPreviewText"></div>
+                                        </div>
                                     </div>
+                                    <button type="button" class="btn btn-success" id="summarizeRecordedBtn">Generate
+                                        Summary</button>
                                 </div>
                             </div>
-                            
+
                             <!-- Paste Text Tab -->
                             <div class="tab-pane fade" id="paste" role="tabpanel" aria-labelledby="paste-tab">
                                 <form id="pasteTextForm">
                                     <div class="mb-3">
                                         <label for="pastedText" class="form-label">Meeting Transcript</label>
-                                        <textarea class="form-control" id="pastedText" name="transcript" rows="10" placeholder="Paste your meeting transcript here..."></textarea>
+                                        <textarea class="form-control" id="pastedText" name="transcript" rows="10"
+                                            placeholder="Paste your meeting transcript here (e.g. Speaker 1: text)"></textarea>
                                     </div>
                                     <div class="mb-3">
-                                        <label for="pasteParticipants" class="form-label">Participants (comma-separated)</label>
-                                        <input type="text" class="form-control" id="pasteParticipants" name="participants" placeholder="Alice, Bob, Charlie, Dave, Eva">
+                                        <label for="pasteParticipants" class="form-label">Participants
+                                            (comma-separated)</label>
+                                        <input type="text" class="form-control" id="pasteParticipants"
+                                            name="participants" placeholder="Alice, Bob, Charlie, Dave, Eva">
                                         <div class="form-text">Leave empty to auto-detect participants</div>
                                     </div>
                                     <div class="mb-3">
@@ -183,18 +260,20 @@
                                     <button type="submit" class="btn btn-primary">Generate Summary</button>
                                 </form>
                             </div>
-                            
+
                             <!-- Upload Text Tab -->
                             <div class="tab-pane fade" id="upload" role="tabpanel" aria-labelledby="upload-tab">
                                 <form id="uploadTextForm" enctype="multipart/form-data">
                                     <div class="mb-3">
-                                        <label for="textFile" class="form-label">Upload Meeting Transcript</label>
+                                        <label for="textFile" class="form-label">Upload Transcript Text File</label>
                                         <input class="form-control" type="file" id="textFile" name="file" accept=".txt">
-                                        <div class="form-text">Upload a text file containing your meeting transcript</div>
+                                        <div class="form-text">Upload a plain text file containing your transcript</div>
                                     </div>
                                     <div class="mb-3">
-                                        <label for="uploadParticipants" class="form-label">Participants (comma-separated)</label>
-                                        <input type="text" class="form-control" id="uploadParticipants" name="participants" placeholder="Alice, Bob, Charlie, Dave, Eva">
+                                        <label for="uploadParticipants" class="form-label">Participants
+                                            (comma-separated)</label>
+                                        <input type="text" class="form-control" id="uploadParticipants"
+                                            name="participants" placeholder="Alice, Bob, Charlie, Dave, Eva">
                                         <div class="form-text">Leave empty to auto-detect participants</div>
                                     </div>
                                     <div class="mb-3">
@@ -210,22 +289,42 @@
                                     </div>
                                     <button type="submit" class="btn btn-primary">Generate Summary</button>
                                 </form>
-                                
+
                                 <!-- Text Preview (hidden initially) -->
                                 <div id="textPreview" class="mt-4 d-none">
-                                    <h5>Transcript Preview</h5>
-                                    <div class="card">
-                                        <div class="card-body">
-                                            <pre id="textPreviewContent" class="mb-0" style="max-height: 300px; overflow-y: auto;"></pre>
+                                    <h5 class="mb-3"
+                                        style="font-size: 0.8125rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-light);">
+                                        Transcript Preview</h5>
+                                    <div class="card mb-3">
+                                        <div class="card-body p-3">
+                                            <pre id="textPreviewContent" class="mb-0"
+                                                style="max-height: 300px; overflow-y: auto;"></pre>
                                         </div>
                                     </div>
-                                    <div class="mt-3">
-                                        <p id="detectedParticipants" class="text-success"></p>
-                                        <button type="button" class="btn btn-success" id="summarizeTextBtn">Generate Summary</button>
+                                    <div class="d-flex align-items-center justify-content-between">
+                                        <span id="detectedParticipants" class="text-success small"></span>
+                                        <button type="button" class="btn btn-success" id="summarizeTextBtn">Generate
+                                            Summary</button>
                                     </div>
                                 </div>
                             </div>
                         </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Processing Status for Summarization (hidden initially) -->
+        <div id="summaryProcessingStatus" class="row d-none">
+            <div class="col-12">
+                <div class="card mb-4">
+                    <div class="card-body text-center py-5">
+                        <p class="form-label mb-3">Generating Meeting Summary...</p>
+                        <div class="progress mb-3" style="max-width: 400px; margin: 0 auto;">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated" id="summaryProgressBar"
+                                role="progressbar" style="width: 0%"></div>
+                        </div>
+                        <p id="summaryStatusText" class="text-muted small">Analyzing transcript...</p>
                     </div>
                 </div>
             </div>
@@ -238,42 +337,46 @@
                     <div class="card-header">
                         <ul class="nav nav-tabs card-header-tabs" id="resultTabs" role="tablist">
                             <li class="nav-item" role="presentation">
-                                <button class="nav-link active" id="summary-tab" data-bs-toggle="tab" data-bs-target="#summary" type="button" role="tab" aria-controls="summary" aria-selected="true">Meeting Summary</button>
+                                <button class="nav-link active" id="summary-tab" data-bs-toggle="tab"
+                                    data-bs-target="#summary" type="button" role="tab" aria-controls="summary"
+                                    aria-selected="true">Meeting Summary</button>
                             </li>
                             <li class="nav-item" role="presentation">
-                                <button class="nav-link" id="speakers-tab" data-bs-toggle="tab" data-bs-target="#speakers" type="button" role="tab" aria-controls="speakers" aria-selected="false">Speaker Summaries</button>
+                                <button class="nav-link" id="speakers-tab" data-bs-toggle="tab"
+                                    data-bs-target="#speakers" type="button" role="tab" aria-controls="speakers"
+                                    aria-selected="false">Speaker Summaries</button>
                             </li>
                         </ul>
                     </div>
                     <div class="card-body">
                         <div class="tab-content" id="resultTabsContent">
+
                             <!-- Meeting Summary Tab -->
-                            <div class="tab-pane fade show active" id="summary" role="tabpanel" aria-labelledby="summary-tab">
+                            <div class="tab-pane fade show active" id="summary" role="tabpanel"
+                                aria-labelledby="summary-tab">
                                 <div class="row">
-                                    <div class="col-md-7">
+                                    <div class="col-md-7 border-end border-light">
                                         <h4>Meeting Summary</h4>
                                         <div id="meetingSummary" class="mb-4"></div>
-                                        
+
                                         <h4>Key Points</h4>
                                         <ul id="keyPoints" class="mb-4"></ul>
-                                        
+
                                         <h4>Decisions Made</h4>
                                         <ul id="decisions" class="mb-4"></ul>
                                     </div>
-                                    <div class="col-md-5">
+                                    <div class="col-md-5 ps-md-4">
                                         <h4>Action Items</h4>
-                                        <div id="actionItems" class="accordion"></div>
-                                        
-                                        <div class="mt-4">
-                                            <h5>Meeting Metadata</h5>
-                                            <table class="table table-sm">
-                                                <tbody id="metadataTable"></tbody>
-                                            </table>
-                                        </div>
+                                        <div id="actionItems" class="accordion mb-4"></div>
+
+                                        <h4>Meeting Metadata</h4>
+                                        <table class="table table-sm">
+                                            <tbody id="metadataTable"></tbody>
+                                        </table>
                                     </div>
                                 </div>
                             </div>
-                            
+
                             <!-- Speaker Summaries Tab -->
                             <div class="tab-pane fade" id="speakers" role="tabpanel" aria-labelledby="speakers-tab">
                                 <h4>Speaker Contributions</h4>
@@ -281,51 +384,30 @@
                             </div>
                         </div>
                     </div>
-                    <div class="card-footer">
-                        <button id="downloadJsonBtn" class="btn btn-outline-primary me-2">Download Summary (JSON)</button>
-                        <button id="downloadTextBtn" class="btn btn-outline-secondary">Download Transcript (TXT)</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Processing Status (hidden initially) -->
-        <div id="summaryProcessingStatus" class="row d-none">
-            <div class="col-12">
-                <div class="card mb-4">
-                    <div class="card-body text-center">
-                        <h4>Generating Summary...</h4>
-                        <div class="progress mb-3">
-                            <div class="progress-bar progress-bar-striped progress-bar-animated" id="summaryProgressBar" role="progressbar" style="width: 0%"></div>
-                        </div>
-                        <p id="summaryStatusText">Analyzing transcript...</p>
+                    <div class="card-footer d-flex gap-2">
+                        <button id="downloadJsonBtn" class="btn btn-outline-primary">Download Summary (JSON)</button>
+                        <button id="downloadTextBtn" class="btn btn-outline-secondary">Download Transcript
+                            (TXT)</button>
                     </div>
                 </div>
             </div>
         </div>
 
         <!-- Tips Sidebar -->
-        <div class="row mt-4">
+        <div class="row mt-4 mb-5">
             <div class="col-12">
-                <div class="card">
-                    <div class="card-header">
-                        <h5 class="mb-0">Tips for Best Results</h5>
-                    </div>
-                    <div class="card-body">
-                        <ul>
-                            <li>When using audio, ensure clear recording with minimal background noise</li>
-                            <li>For Hindi or other non-English audio, select the language for better accuracy</li>
-                            <li>For text transcripts, include speaker names (e.g., "Alice: Hello everyone")</li>
-                            <li>The app will automatically detect participants from the transcript or audio</li>
-                            <li>For more accurate action items, make sure assignments and deadlines are clearly stated</li>
-                            <li>For longer meetings (>15 minutes), check the "This is a long recording" option</li>
-                        </ul>
-                        
-                        <h6 class="mt-3">Supported File Types</h6>
-                        <p>Audio: WAV, MP3, M4A<br>Text: TXT</p>
-                        
-                        <h6 class="mt-3">About</h6>
-                        <p>This tool uses LangGraph, LLMs, and audio processing to transcribe meeting recordings, generate concise summaries, extract key points, identify decisions, compile action items, and create speaker contribution summaries.</p>
+                <div class="card" style="background-color: var(--primary-soft); border-color: var(--primary-light);">
+                    <div class="card-body p-4">
+                        <h5 class="mb-3" style="font-size: 0.875rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--primary);">💡 Tips for Best Results</h5>
+                        <div class="row">
+                            <div class="col-12">
+                                <ul class="mb-0 ps-3 text-muted" style="font-size: 0.85rem; line-height: 1.7;">
+                                    <li><strong>Word-Level Verification</strong>: Correct any low-confidence word by typing directly in the transcript. Edits automatically save to your custom active glossary.</li>
+                                    <li><strong>Inline Speaker Renaming</strong>: Click on any speaker name in the transcript header to rename them globally across the entire file.</li>
+                                    <li><strong>Audio Quality</strong>: Record audio in a quiet environment with minimal background noise for the best ASR transcription and diarization results.</li>
+                                </ul>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -333,6 +415,7 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="/static/js/main.js"></script>
+    <script src="/static/js/main.js?v=4.2"></script>
 </body>
+
 </html>

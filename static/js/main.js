@@ -87,6 +87,11 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('summarizeTextBtn').addEventListener('click', handleSummarizeTextClick);
     document.getElementById('downloadJsonBtn').addEventListener('click', handleDownloadJson);
     document.getElementById('downloadTextBtn').addEventListener('click', handleDownloadText);
+    
+    const refineBtn = document.getElementById('refineTranscriptBtn');
+    if (refineBtn) {
+        refineBtn.addEventListener('click', handleRefineTranscriptClick);
+    }
 
     /**
      * Handle audio form submission
@@ -103,6 +108,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         try {
+            // Instantly bind local audio URL to the meeting audio player for click-to-seek sync
+            const localAudioUrl = URL.createObjectURL(audioFile);
+            window.currentAudioStreamUrl = localAudioUrl;
+            const meetingPlayer = document.getElementById('meetingAudioPlayer');
+            if (meetingPlayer) {
+                meetingPlayer.src = localAudioUrl;
+                meetingPlayer.classList.remove('d-none');
+            }
+
             // Show processing status
             document.getElementById('audioProcessingStatus').classList.remove('d-none');
             updateAudioProgress(0, 'Starting audio processing...');
@@ -260,28 +274,23 @@ document.addEventListener('DOMContentLoaded', () => {
                             }
                         }
                         
-                        // Show transcript preview with confidence indicators
-                        const previewText = document.getElementById('transcriptPreviewText');
-                        const formattedTranscript = data.result.formatted_transcript;
-                        
-                        // Convert to HTML with color-coding by confidence
-                        const htmlContent = formattedTranscript.map(line => {
-                            // Color-code based on confidence indicators
-                            if (line.includes("✓ Speaker")) {
-                                return `<div class="text-success">${line}</div>`;
-                            } else if (line.includes("~ Speaker")) {
-                                return `<div class="text-warning">${line}</div>`;
-                            } else if (line.includes("? Speaker")) {
-                                return `<div class="text-danger">${line}</div>`;
-                            } else {
-                                return `<div>${line}</div>`;
-                            }
-                        }).join('');
-                        
-                        // Use innerHTML to render the HTML formatting
-                        previewText.innerHTML = htmlContent.length > 10000 
-                            ? htmlContent.substring(0, 10000) + '...' 
-                            : htmlContent;
+                        // Setup audio player if permanent recording exists
+                        const audioPlayer = document.getElementById('meetingAudioPlayer');
+                        if (audioPlayer && currentJobId) {
+                            audioPlayer.src = `/recordings/${currentJobId}.wav`;
+                            audioPlayer.classList.remove('d-none');
+                        }
+
+                        // Render word-level interactive color-coded transcript
+                        const segmentsList = data.result.segments || data.result.transcript || data.result.raw_transcription;
+                        if (segmentsList && segmentsList.length > 0) {
+                            renderInteractiveTranscript(segmentsList, 'transcriptPreviewText');
+                        } else {
+                            // Fallback to formatted transcript lines
+                            const previewText = document.getElementById('transcriptPreviewText');
+                            const formattedTranscript = data.result.formatted_transcript || [];
+                            previewText.innerHTML = formattedTranscript.map(line => `<div>${line}</div>`).join('');
+                        }
                         
                         document.getElementById('transcriptPreview').classList.remove('d-none');
                         
@@ -320,6 +329,337 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         return `<span class="badge ${badgeClass} me-1" title="${confidence}% confidence">${indicator}</span> ${text}`;
+    }
+
+    /**
+     * Render word-level interactive color-coded transcript
+     */
+    function renderInteractiveTranscript(segments, targetElementId) {
+        const target = document.getElementById(targetElementId);
+        if (!target) return;
+        
+        // Collect all distinct original speaker names
+        const distinctSpeakers = new Set();
+        segments.forEach((seg, sIdx) => {
+            let rawSpeaker = seg.speaker !== undefined && seg.speaker !== null ? String(seg.speaker) : (seg.speaker_id !== undefined ? String(seg.speaker_id) : `Speaker ${sIdx + 1}`);
+            let speaker = rawSpeaker;
+            if (rawSpeaker === 'SPEAKER_00' || rawSpeaker === '0') speaker = 'Speaker 1';
+            else if (rawSpeaker === 'SPEAKER_01' || rawSpeaker === '1') speaker = 'Speaker 2';
+            else if (rawSpeaker === 'SPEAKER_02' || rawSpeaker === '2') speaker = 'Speaker 3';
+            else if (rawSpeaker.startsWith('SPEAKER_')) {
+                const num = parseInt(rawSpeaker.replace('SPEAKER_', ''), 10);
+                speaker = !isNaN(num) ? `Speaker ${num + 1}` : rawSpeaker;
+            }
+            distinctSpeakers.add(speaker);
+        });
+
+        let html = '';
+
+        // Render Speaker Rename Quick Toolbar
+        if (distinctSpeakers.size > 0) {
+            html += `<div class="card mb-3 border-info shadow-sm">`;
+            html += `<div class="card-body py-2 px-3 bg-light">`;
+            html += `<div class="d-flex align-items-center justify-content-between flex-wrap gap-2">`;
+            html += `<span class="fw-bold text-dark small">👤 Edit Speaker Names for Summary:</span>`;
+            html += `<div class="d-flex flex-wrap gap-3 align-items-center">`;
+            distinctSpeakers.forEach(spk => {
+                html += `<div class="d-flex align-items-center gap-1">`;
+                html += `<span class="badge bg-primary me-1">${spk} ➔</span>`;
+                html += `<input type="text" class="form-control form-control-sm speaker-rename-input" data-original-speaker="${spk}" value="${spk}" placeholder="Enter name e.g. Pranav" style="width: 160px; font-weight: bold;">`;
+                html += `</div>`;
+            });
+            html += `</div></div></div></div>`;
+        }
+        
+        segments.forEach((seg, sIdx) => {
+            let rawSpeaker = seg.speaker !== undefined && seg.speaker !== null ? String(seg.speaker) : (seg.speaker_id !== undefined ? String(seg.speaker_id) : `Speaker ${sIdx + 1}`);
+            let speaker = rawSpeaker;
+            if (rawSpeaker === 'SPEAKER_00' || rawSpeaker === '0') speaker = 'Speaker 1';
+            else if (rawSpeaker === 'SPEAKER_01' || rawSpeaker === '1') speaker = 'Speaker 2';
+            else if (rawSpeaker === 'SPEAKER_02' || rawSpeaker === '2') speaker = 'Speaker 3';
+            else if (rawSpeaker.startsWith('SPEAKER_')) {
+                const num = parseInt(rawSpeaker.replace('SPEAKER_', ''), 10);
+                speaker = !isNaN(num) ? `Speaker ${num + 1}` : rawSpeaker;
+            }
+            
+            const segStart = seg.start !== undefined ? seg.start : (seg.start_time !== undefined ? seg.start_time : 0);
+            const segEnd = seg.end !== undefined ? seg.end : (seg.end_time !== undefined ? seg.end_time : segStart + 2);
+            const startTime = typeof formatTime === 'function' ? formatTime(segStart) : `${Math.floor(segStart)}s`;
+            const segConf = seg.confidence !== undefined && seg.confidence !== null ? Math.round(seg.confidence) : 85;
+            
+            let segBadge = 'bg-success';
+            if (segConf < 65) segBadge = 'bg-danger';
+            else if (segConf < 90) segBadge = 'bg-warning text-dark';
+            
+            html += `<div class="mb-3 p-2 rounded border-start border-3 ${segConf < 65 ? 'border-danger bg-light' : 'border-primary'}" data-segment-id="${sIdx}" data-start="${segStart}" data-end="${segEnd}">`;
+            html += `<div class="d-flex justify-content-between text-muted small mb-1">`;
+            html += `<span class="d-inline-flex align-items-center gap-1"><strong class="speaker-name text-primary text-decoration-underline" contenteditable="true" spellcheck="false" data-original-speaker="${speaker}" title="Click to edit speaker name (e.g. rename to Pranav)">${speaker}</strong> <span title="Click to edit speaker name">✏️</span> ${startTime ? `<span class="segment-time ms-1">(${startTime})</span>` : ''}</span>`;
+            html += `<span class="badge ${segBadge}">Confidence: ${segConf}%</span>`;
+            html += `</div><div>`;
+            
+            const wordsList = (seg.words && seg.words.length > 0) ? seg.words : (seg.text ? seg.text.split(' ').map(wText => ({ word: wText, confidence: segConf, start: segStart, end: segEnd })) : []);
+            
+            if (wordsList.length > 0) {
+                wordsList.forEach(w => {
+                    const wordText = w.word || '';
+                    const conf = w.confidence !== undefined && w.confidence !== null ? Math.round(w.confidence) : segConf;
+                    const status = w.status || (conf < 65 ? 'NEEDS_REVIEW' : (conf < 90 ? 'MEDIUM_CONFIDENCE' : 'HIGH_CONFIDENCE'));
+                    
+                    let wordClass = 'word-high';
+                    let tooltipText = `Confidence: ${conf}%`;
+                    
+                    if (status === 'AI_CORRECTED' || w.original_word) {
+                        wordClass = 'word-ai-corrected';
+                        tooltipText = `✨ Auto-Corrected (Original: "${w.original_word || 'misheard'}" ➔ "${wordText}")`;
+                    } else if (status === 'USER_VERIFIED') {
+                        wordClass = 'word-user-verified';
+                        tooltipText = `✓ User Verified`;
+                    } else if (conf < 65 || status === 'NEEDS_REVIEW') {
+                        wordClass = 'word-low';
+                        tooltipText = `⚠️ Low Confidence (${conf}%). Click to listen / edit.`;
+                    } else if (conf < 90) {
+                        wordClass = 'word-medium';
+                        tooltipText = `Medium Confidence (${conf}%)`;
+                    }
+                    
+                    const wStart = w.start !== undefined ? w.start : segStart;
+                    const wEnd = w.end !== undefined ? w.end : segEnd;
+                    
+                    html += `<span class="word-span ${wordClass}" data-start="${wStart}" data-end="${wEnd}" data-confidence="${conf}" data-status="${status}" contenteditable="true" spellcheck="false">`;
+                    html += `${wordText}`;
+                    html += `<span class="word-tooltip">${tooltipText}</span>`;
+                    html += `</span> `;
+                });
+            } else {
+                html += `<span>${seg.text}</span>`;
+            }
+            
+            html += `</div></div>`;
+        });
+        
+        target.innerHTML = html;
+        attachWordSyncListeners(targetElementId);
+        attachSpeakerRenameListeners(targetElementId);
+    }
+
+    /**
+     * Attach click-to-play audio sync & inline edit listeners
+     */
+    function attachWordSyncListeners(targetElementId) {
+        const container = document.getElementById(targetElementId);
+        if (!container) return;
+        
+        // Use event delegation for reliable click handling
+        container.removeEventListener('click', container._wordSyncClickHandler);
+        container._wordSyncClickHandler = function(e) {
+            const wordEl = e.target.closest('.word-span');
+            if (!wordEl) return;
+            
+            let audioPlayer = null;
+            if (targetElementId === 'recordTranscriptPreviewText') {
+                audioPlayer = document.getElementById('recordedAudioPlayback') || document.getElementById('meetingAudioPlayer');
+            } else {
+                audioPlayer = document.getElementById('meetingAudioPlayer') || document.getElementById('recordedAudioPlayback');
+            }
+            
+            if (!audioPlayer) return;
+            
+            // Ensure audio player has a valid audio source URL
+            if ((!audioPlayer.src || audioPlayer.src.endsWith('/')) && window.currentAudioStreamUrl) {
+                audioPlayer.src = window.currentAudioStreamUrl;
+            }
+            
+            audioPlayer.classList.remove('d-none');
+            
+            const start = parseFloat(wordEl.getAttribute('data-start'));
+            
+            // Find parent speaker segment and its end timestamp
+            const segmentEl = wordEl.closest('[data-segment-id]');
+            const segmentEnd = segmentEl ? parseFloat(segmentEl.getAttribute('data-end')) : parseFloat(wordEl.getAttribute('data-end'));
+            
+            // Clear any active stop target immediately
+            audioPlayer.playbackStopTarget = null;
+            
+            // Setup dynamic stop target AFTER the seek completes to prevent race conditions
+            if (!isNaN(segmentEnd)) {
+                const onSeeked = function() {
+                    audioPlayer.playbackStopTarget = segmentEnd;
+                    console.log(`Seek complete: play until ${segmentEnd}s`);
+                    audioPlayer.removeEventListener('seeked', onSeeked);
+                };
+                audioPlayer.addEventListener('seeked', onSeeked);
+            }
+            
+            // Bind timeupdate event handler to enforce segment playback restriction (only once)
+            if (!audioPlayer._playbackStopListenerAttached) {
+                audioPlayer.addEventListener('timeupdate', function() {
+                    // Ignore checks while seeking is active
+                    if (this.seeking) return;
+                    
+                    if (this.playbackStopTarget !== undefined && this.playbackStopTarget !== null) {
+                        if (this.currentTime >= this.playbackStopTarget) {
+                            console.log(`Pausing audio playback automatically at segment end: ${this.playbackStopTarget}s`);
+                            this.pause();
+                            this.playbackStopTarget = null; // Clear stop target
+                        }
+                    }
+                });
+                audioPlayer._playbackStopListenerAttached = true;
+            }
+            
+            if (!isNaN(start)) {
+                try {
+                    audioPlayer.currentTime = start;
+                    const playPromise = audioPlayer.play();
+                    if (playPromise !== undefined) {
+                        playPromise.then(() => {
+                            console.log(`Audio playback seeking to ${start}s`);
+                        }).catch(err => console.log("Audio playback notice:", err));
+                    }
+                } catch (seekErr) {
+                    console.warn("Audio seek notice:", seekErr);
+                }
+                
+                container.querySelectorAll('.word-span').forEach(el => el.classList.remove('playing-word'));
+                wordEl.classList.add('playing-word');
+            }
+        };
+        container.addEventListener('click', container._wordSyncClickHandler);
+
+        // Attach focus and blur event listeners for inline human editing
+        container.querySelectorAll('.word-span').forEach(wordEl => {
+            // Track the original word text on focus to compare later
+            wordEl.addEventListener('focus', function() {
+                const textNodes = Array.from(this.childNodes).filter(node => node.nodeType === Node.TEXT_NODE);
+                this._originalText = textNodes.map(n => n.textContent).join('').trim();
+            });
+
+            wordEl.addEventListener('blur', function() {
+                const textNodes = Array.from(this.childNodes).filter(node => node.nodeType === Node.TEXT_NODE);
+                const newText = textNodes.map(n => n.textContent).join('').trim();
+                
+                // Only mark as user verified if the text actually changed
+                if (this._originalText !== undefined && newText !== this._originalText) {
+                    this.setAttribute('data-status', 'USER_VERIFIED');
+                    this.className = 'word-span word-user-verified';
+                    const tooltip = this.querySelector('.word-tooltip');
+                    if (tooltip) tooltip.textContent = '✓ User Verified';
+
+                    // Save new term to active learning glossary
+                    if (newText && newText.length > 2) {
+                        fetch('/api/vocabulary', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ term: newText })
+                        }).then(res => res.json()).then(d => {
+                            console.log("Saved term to active glossary:", d);
+                        }).catch(e => console.log("Glossary save deferred:", e));
+                    }
+                }
+            });
+        });
+    }
+
+    /**
+     * Attach real-time speaker rename synchronization listeners
+     */
+    function attachSpeakerRenameListeners(targetElementId) {
+        const container = document.getElementById(targetElementId);
+        if (!container) return;
+
+        // 1. Listen for toolbar input changes
+        const renameInputs = container.querySelectorAll('.speaker-rename-input');
+        renameInputs.forEach(inputEl => {
+            inputEl.addEventListener('input', function() {
+                const origSpk = this.getAttribute('data-original-speaker');
+                const newName = this.value.trim() || origSpk;
+                
+                // Update all matching speaker-name tags in this container
+                container.querySelectorAll(`.speaker-name[data-original-speaker="${origSpk}"]`).forEach(spkEl => {
+                    spkEl.innerText = newName;
+                });
+            });
+        });
+
+        // 2. Listen for direct inline <strong class="speaker-name"> edits
+        const speakerEls = container.querySelectorAll('.speaker-name');
+        speakerEls.forEach(spkEl => {
+            spkEl.addEventListener('input', function() {
+                const origSpk = this.getAttribute('data-original-speaker');
+                const newName = this.innerText.trim();
+                
+                // Update matching toolbar input if present
+                const toolbarInput = container.querySelector(`.speaker-rename-input[data-original-speaker="${origSpk}"]`);
+                if (toolbarInput) {
+                    toolbarInput.value = newName;
+                }
+                
+                // Update all other matching speaker tags
+                container.querySelectorAll(`.speaker-name[data-original-speaker="${origSpk}"]`).forEach(otherEl => {
+                    if (otherEl !== spkEl) {
+                        otherEl.innerText = newName;
+                    }
+                });
+            });
+        });
+    }
+
+    /**
+     * Helper to extract unique participant names from edited transcript text
+     */
+    function extractParticipantsFromEditedText(transcriptText) {
+        const speakers = new Set();
+        if (!transcriptText) return [];
+        const lines = transcriptText.split('\n');
+        lines.forEach(line => {
+            const parts = line.split(':', 1);
+            if (parts.length > 0 && parts[0].trim()) {
+                let spk = parts[0].trim().replace(/^\[.*?\]\s*/, '');
+                if (spk) speakers.add(spk);
+            }
+        });
+        return Array.from(speakers);
+    }
+
+    /**
+     * Handle Refine Low-Confidence Words with Local AI (Ollama)
+     */
+    async function handleRefineTranscriptClick(event) {
+        const btn = event ? event.currentTarget : (document.getElementById('refineTranscriptBtn') || document.getElementById('refineRecordTranscriptBtn'));
+        if (!btn || !currentJobId) {
+            alert('No active audio transcript available to refine.');
+            return;
+        }
+        
+        const targetTextId = (btn.id === 'refineRecordTranscriptBtn') ? 'recordTranscriptPreviewText' : 'transcriptPreviewText';
+        const originalText = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = `<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span> Refining with Local AI (Ollama)...`;
+        
+        try {
+            const response = await fetch('/api/refine-transcript', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ job_id: currentJobId })
+            });
+            
+            const data = await response.json();
+            if (response.ok && data.status === 'success' && data.segments) {
+                if (currentTranscript) {
+                    currentTranscript.segments = data.segments;
+                }
+                renderInteractiveTranscript(data.segments, targetTextId);
+                alert('✨ Transcript successfully refined using Local AI (Ollama)!');
+            } else {
+                alert('Error refining transcript: ' + (data.detail || 'Failed to refine with local AI. Make sure Ollama is running.'));
+            }
+        } catch (err) {
+            console.error('Refine error:', err);
+            alert('Failed to connect to Local LLM refinement service: ' + err.message);
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+        }
     }
 
     /**
@@ -388,7 +728,54 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     /**
-     * Handle summarize audio button click
+     * Extract updated transcript text from UI DOM including human edits
+     */
+    function extractEditedTranscriptFromDOM(containerId) {
+        const container = document.getElementById(containerId);
+        if (!container) return null;
+
+        const segmentDivs = container.querySelectorAll('[data-segment-id]');
+        if (!segmentDivs || segmentDivs.length === 0) {
+            return container.innerText.trim();
+        }
+
+        const lines = [];
+        segmentDivs.forEach(segEl => {
+            const headerEl = segEl.querySelector('strong');
+            const speakerName = headerEl ? headerEl.innerText.trim() : 'Speaker 1';
+            
+            const wordSpans = segEl.querySelectorAll('.word-span');
+            let text = '';
+            if (wordSpans && wordSpans.length > 0) {
+                const wordTexts = [];
+                wordSpans.forEach(wEl => {
+                    let wText = '';
+                    wEl.childNodes.forEach(node => {
+                        if (node.nodeType === Node.TEXT_NODE) {
+                            wText += node.textContent;
+                        }
+                    });
+                    if (!wText) {
+                        const tooltip = wEl.querySelector('.word-tooltip');
+                        wText = wEl.innerText.replace(tooltip ? tooltip.innerText : '', '').trim();
+                    }
+                    if (wText) wordTexts.push(wText.trim());
+                });
+                text = wordTexts.join(' ');
+            } else {
+                text = segEl.innerText.trim();
+            }
+
+            if (text) {
+                lines.push(`${speakerName}: ${text}`);
+            }
+        });
+
+        return lines.length > 0 ? lines.join('\n') : container.innerText.trim();
+    }
+
+    /**
+     * Handle Summarize Audio button click
      */
     async function handleSummarizeAudioClick() {
         if (!currentTranscript) {
@@ -400,13 +787,20 @@ document.addEventListener('DOMContentLoaded', () => {
             // Show processing status
             document.getElementById('summaryProcessingStatus').classList.remove('d-none');
             document.getElementById('resultsSection').classList.add('d-none');
-            updateSummaryProgress(10, 'Starting summarization...');
+            updateSummaryProgress(10, 'Starting summarization with updated transcript...');
             
-            // Extract participants (speakers) from transcript
-            const speakers = new Set();
-            currentTranscript.transcript.forEach(segment => {
-                speakers.add(`Speaker ${segment.speaker}`);
-            });
+            // Extract live updated transcript from UI DOM containing human edits & auto-corrections
+            const updatedTranscriptText = extractEditedTranscriptFromDOM('transcriptPreviewText') || currentTranscript.formatted_transcript.join('\n');
+            console.log("Sending updated live transcript to LLM:", updatedTranscriptText);
+
+            // Extract participants (speakers) from transcript text (user-edited names)
+            const editedParticipants = extractParticipantsFromEditedText(updatedTranscriptText);
+            const speakers = new Set(editedParticipants);
+            if (speakers.size === 0 && currentTranscript.transcript) {
+                currentTranscript.transcript.forEach(segment => {
+                    speakers.add(`Speaker ${segment.speaker}`);
+                });
+            }
             
             // Get additional context if provided
             let additionalContext = null;
@@ -417,13 +811,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.log("Including additional context:", additionalContext);
             }
             
-            // Prepare request data
+            // Prepare request data with the UPDATED transcript and UPDATED speaker names
             const requestData = {
-                transcript: currentTranscript.formatted_transcript.join('\n'),
+                transcript: updatedTranscriptText,
                 participants: Array.from(speakers),
                 language: currentTranscript.language,
-                is_long_recording: document.getElementById('isLongRecording').checked,
-                additional_context: additionalContext  // Add the context to the request
+                is_long_recording: document.getElementById('isLongRecording') ? document.getElementById('isLongRecording').checked : false,
+                additional_context: additionalContext
             };
             
             // Submit the request
@@ -755,220 +1149,223 @@ document.addEventListener('DOMContentLoaded', () => {
      * Display results in the UI
      */
     function displayResults(result) {
+        if (!result) return;
+
         // Hide processing status and show results section
         document.getElementById('summaryProcessingStatus').classList.add('d-none');
         document.getElementById('resultsSection').classList.remove('d-none');
         
-        // Meeting summary
-        const meetingSummary = document.getElementById('meetingSummary');
-        meetingSummary.textContent = result.meeting_summary.summary;
-        
-        // Add confidence information to metadata if available
-        if (currentTranscript && currentTranscript.confidence_metrics) {
-            const metrics = currentTranscript.confidence_metrics;
-            const confidenceData = document.createElement('div');
-            confidenceData.className = 'small text-muted mt-2';
-            confidenceData.innerHTML = `
-                <strong>Transcription Confidence:</strong> ${metrics.average}% average
-                ${metrics.low_confidence_percentage > 10 ? 
-                `<span class="text-warning ms-2">⚠️ ${metrics.low_confidence_percentage}% low confidence segments</span>` : ''}
-            `;
-            meetingSummary.appendChild(confidenceData);
+        // Extract meeting summary string safely
+        let summaryText = "";
+        let keyPointsList = [];
+        let decisionsList = [];
+
+        if (typeof result.meeting_summary === 'string') {
+            summaryText = result.meeting_summary;
+        } else if (result.meeting_summary && typeof result.meeting_summary === 'object') {
+            summaryText = result.meeting_summary.summary || result.meeting_summary.text || result.meeting_summary.overview || "";
+            keyPointsList = Array.isArray(result.meeting_summary.key_points) ? result.meeting_summary.key_points : (Array.isArray(result.key_points) ? result.key_points : []);
+            decisionsList = Array.isArray(result.meeting_summary.decisions) ? result.meeting_summary.decisions : (Array.isArray(result.decisions) ? result.decisions : []);
         }
 
-        // Key points
-        const keyPoints = document.getElementById('keyPoints');
-        keyPoints.innerHTML = '';
-        result.meeting_summary.key_points.forEach(point => {
-            const li = document.createElement('li');
-            li.textContent = point;
-            keyPoints.appendChild(li);
-        });
-        
-        // Decisions
-        const decisions = document.getElementById('decisions');
-        decisions.innerHTML = '';
-        result.meeting_summary.decisions.forEach(decision => {
-            const li = document.createElement('li');
-            li.textContent = decision;
-            decisions.appendChild(li);
-        });
-        
-        // Action items
-        const actionItems = document.getElementById('actionItems');
-        actionItems.innerHTML = '';
-        result.action_items.forEach((item, index) => {
-            const actionId = `action-${index}`;
+        if (keyPointsList.length === 0 && Array.isArray(result.key_points)) {
+            keyPointsList = result.key_points;
+        }
+        if (decisionsList.length === 0 && Array.isArray(result.decisions)) {
+            decisionsList = result.decisions;
+        }
+
+        // 1. Meeting Summary
+        const meetingSummary = document.getElementById('meetingSummary');
+        if (meetingSummary) {
+            meetingSummary.textContent = summaryText || "Summary generated successfully.";
             
-            // Determine priority color
-            let priorityBadge;
-            switch(item.priority.toLowerCase()) {
-                case 'high':
-                    priorityBadge = '<span class="badge bg-danger ms-2">High</span>';
-                    break;
-                case 'medium':
-                    priorityBadge = '<span class="badge bg-warning text-dark ms-2">Medium</span>';
-                    break;
-                default:
-                    priorityBadge = '<span class="badge bg-success ms-2">Low</span>';
-            }
-            
-            const actionItem = `
-                <div class="accordion-item">
-                    <h2 class="accordion-header" id="heading-${actionId}">
-                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-${actionId}" aria-expanded="false" aria-controls="collapse-${actionId}">
-                            <strong>${item.action}</strong>${priorityBadge}
-                        </button>
-                    </h2>
-                    <div id="collapse-${actionId}" class="accordion-collapse collapse" aria-labelledby="heading-${actionId}" data-bs-parent="#actionItems">
-                        <div class="accordion-body">
-                            <p><strong>Assignee:</strong> ${item.assignee}</p>
-                            <p><strong>Due Date:</strong> ${item.due_date}</p>
-                        </div>
-                    </div>
-                </div>
-            `;
-            actionItems.innerHTML += actionItem;
-        });
-        
-        // Metadata
-        const metadataTable = document.getElementById('metadataTable');
-        metadataTable.innerHTML = '';
-        
-        if (result.metadata) {
-            const metadata = result.metadata;
-            
-            // Add rows to the table
-            if (metadata.language_name) {
-                // Show the full language name rather than just the code
-                addMetadataRow(metadataTable, 'Language', metadata.language_name);
-            } else {
-                addMetadataRow(metadataTable, 'Language', metadata.language || 'Auto-detected');
-            }
-            
-            // Add confidence metrics if available
             if (currentTranscript && currentTranscript.confidence_metrics) {
                 const metrics = currentTranscript.confidence_metrics;
-                addMetadataRow(metadataTable, 'Transcription Confidence', 
-                              `${metrics.average}% (range: ${metrics.min}%-${metrics.max}%)`);
-                              
-                // Only show low confidence warning if significant
-                if (metrics.low_confidence_percentage > 10) {
-                    addMetadataRow(metadataTable, 'Low Confidence Segments', 
-                                  `${metrics.low_confidence_count} segments (${metrics.low_confidence_percentage}%)`);
-                }
+                const confidenceData = document.createElement('div');
+                confidenceData.className = 'small text-muted mt-2';
+                confidenceData.innerHTML = `
+                    <strong>Transcription Confidence:</strong> ${metrics.average}% average
+                    ${metrics.low_confidence_percentage > 10 ? 
+                    `<span class="text-warning ms-2">⚠️ ${metrics.low_confidence_percentage}% low confidence segments</span>` : ''}
+                `;
+                meetingSummary.appendChild(confidenceData);
             }
-            if (metadata.total_duration_minutes) {
-                addMetadataRow(metadataTable, 'Duration', `${metadata.total_duration_minutes} minutes`);
-            }
-            
-            if (metadata.participant_count) {
-                addMetadataRow(metadataTable, 'Participants', metadata.participant_count);
-            }
-            
-            if (metadata.chunks_analyzed) {
-                addMetadataRow(metadataTable, 'Chunks Analyzed', metadata.chunks_analyzed);
+        }
+
+        // 2. Key Points
+        const keyPoints = document.getElementById('keyPoints');
+        if (keyPoints) {
+            keyPoints.innerHTML = '';
+            if (keyPointsList.length > 0) {
+                keyPointsList.forEach(point => {
+                    const li = document.createElement('li');
+                    li.textContent = typeof point === 'string' ? point : (point.point || point.text || JSON.stringify(point));
+                    keyPoints.appendChild(li);
+                });
+            } else {
+                keyPoints.innerHTML = '<li class="text-muted">No key points extracted.</li>';
             }
         }
         
-        // Speaker summaries
-        const speakerSummaries = document.getElementById('speakerSummaries');
-        speakerSummaries.innerHTML = '';
+        // 3. Decisions
+        const decisions = document.getElementById('decisions');
+        if (decisions) {
+            decisions.innerHTML = '';
+            if (decisionsList.length > 0) {
+                decisionsList.forEach(decision => {
+                    const li = document.createElement('li');
+                    li.textContent = typeof decision === 'string' ? decision : (decision.decision || decision.text || JSON.stringify(decision));
+                    decisions.appendChild(li);
+                });
+            } else {
+                decisions.innerHTML = '<li class="text-muted">No explicit decisions recorded during this meeting.</li>';
+            }
+        }
         
-        if (result.speaker_summaries) {
-            Object.entries(result.speaker_summaries).forEach(([speaker, summary], index) => {
-                const speakerId = `speaker-${index}`;
-                
-                // Add confidence information if available
-                let confidenceDisplay = '';
-                if (currentTranscript) {
-                    // First try to use backend-calculated metrics if available
-                    // Check first in speaker_confidence_metrics directly from result (new location)
-                    if (result.speaker_confidence_metrics && 
-                        result.speaker_confidence_metrics[speaker.replace("Speaker ", "")]) {
-                        
-                        const speakerMetrics = result.speaker_confidence_metrics[speaker.replace("Speaker ", "")];
-                        const avgConfidence = speakerMetrics.average_confidence;
-                        const confidenceClass = avgConfidence >= 90 ? 'text-success' : 
-                                              (avgConfidence >= 70 ? 'text-warning' : 'text-danger');
-                        
-                        confidenceDisplay = `<span class="${confidenceClass} ms-2">(${avgConfidence.toFixed(1)}% confidence)</span>`;
+        // 4. Action Items
+        const actionItems = document.getElementById('actionItems');
+        if (actionItems) {
+            actionItems.innerHTML = '';
+            const actionsList = Array.isArray(result.action_items) ? result.action_items : (Array.isArray(result.actions) ? result.actions : []);
+            
+            if (actionsList.length > 0) {
+                actionsList.forEach((item, index) => {
+                    const actionId = `action-${index}`;
+                    
+                    let actionText = "";
+                    let assignee = "Unassigned";
+                    let dueDate = "Not specified";
+                    let priority = "medium";
+
+                    if (typeof item === 'string') {
+                        actionText = item;
+                    } else if (item && typeof item === 'object') {
+                        actionText = item.action || item.item || item.task || item.description || JSON.stringify(item);
+                        assignee = item.assignee || item.owner || item.person || "Unassigned";
+                        dueDate = item.due_date || item.deadline || item.due || "Not specified";
+                        priority = item.priority || "medium";
                     }
-                    // Then try in currentTranscript.speaker_confidence_metrics (old location)
-                    else if (currentTranscript.speaker_confidence_metrics && 
-                        currentTranscript.speaker_confidence_metrics[speaker.replace("Speaker ", "")]) {
-                        
-                        const speakerMetrics = currentTranscript.speaker_confidence_metrics[speaker.replace("Speaker ", "")];
-                        const avgConfidence = speakerMetrics.average_confidence;
-                        const confidenceClass = avgConfidence >= 90 ? 'text-success' : 
-                                              (avgConfidence >= 70 ? 'text-warning' : 'text-danger');
-                        
-                        confidenceDisplay = `<span class="${confidenceClass} ms-2">(${avgConfidence.toFixed(1)}% confidence)</span>`;
+
+                    let priorityBadge = '<span class="badge bg-warning text-dark ms-2">Medium</span>';
+                    if (String(priority).toLowerCase() === 'high') {
+                        priorityBadge = '<span class="badge bg-danger ms-2">High</span>';
+                    } else if (String(priority).toLowerCase() === 'low') {
+                        priorityBadge = '<span class="badge bg-success ms-2">Low</span>';
                     }
-                    // Fall back to calculation on the frontend if backend metrics aren't available
-                    else {
-                        // Find confidence scores for this speaker
-                        const speakerSegments = currentTranscript.transcript.filter(s => `Speaker ${s.speaker}` === speaker);
-                        if (speakerSegments.length > 0) {
-                            // Calculate average confidence for this speaker
-                            const confidences = speakerSegments
-                                .filter(s => s.confidence !== undefined && s.confidence !== null)
-                                .map(s => s.confidence);
-                            
-                            if (confidences.length > 0) {
-                                const avgConfidence = confidences.reduce((a, b) => a + b, 0) / confidences.length;
-                                const confidenceClass = avgConfidence >= 90 ? 'text-success' : 
-                                                      (avgConfidence >= 70 ? 'text-warning' : 'text-danger');
-                                
-                                confidenceDisplay = `<span class="${confidenceClass} ms-2">(${avgConfidence.toFixed(1)}% confidence)</span>`;
-                            }
-                        }
-                    }
-                }
-                
-                let contributionsList = '';
-                if (summary.key_contributions && summary.key_contributions.length > 0) {
-                    contributionsList = '<h6>Key Contributions:</h6><ul>' + 
-                        summary.key_contributions.map(c => `<li>${c}</li>`).join('') + 
-                        '</ul>';
-                }
-                
-                let actionsList = '';
-                if (summary.action_items && summary.action_items.length > 0) {
-                    actionsList = '<h6>Action Items:</h6><ul>' + 
-                        summary.action_items.map(a => `<li>${a}</li>`).join('') + 
-                        '</ul>';
-                }
-                
-                let questionsList = '';
-                if (summary.questions_raised && summary.questions_raised.length > 0) {
-                    questionsList = '<h6>Questions Raised:</h6><ul>' + 
-                        summary.questions_raised.map(q => `<li>${q}</li>`).join('') + 
-                        '</ul>';
-                }
-                
-                const speakerItem = `
-                    <div class="accordion-item">
-                        <h2 class="accordion-header" id="heading-${speakerId}">
-                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-${speakerId}" aria-expanded="false" aria-controls="collapse-${speakerId}">
-                                <strong>${speaker}</strong>${confidenceDisplay}
-                            </button>
-                        </h2>
-                        <div id="collapse-${speakerId}" class="accordion-collapse collapse" aria-labelledby="heading-${speakerId}" data-bs-parent="#speakerSummaries">
-                            <div class="accordion-body">
-                                <p><strong>Summary:</strong> ${summary.brief_summary}</p>
-                                ${contributionsList}
-                                ${actionsList}
-                                ${questionsList}
-                                
-                                <!-- Add detailed confidence metrics if available -->
-                                ${addSpeakerConfidenceDetails(speaker, result)}
+                    
+                    const actionItemHtml = `
+                        <div class="accordion-item">
+                            <h2 class="accordion-header" id="heading-${actionId}">
+                                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-${actionId}" aria-expanded="false" aria-controls="collapse-${actionId}">
+                                    <strong>${actionText}</strong>${priorityBadge}
+                                </button>
+                            </h2>
+                            <div id="collapse-${actionId}" class="accordion-collapse collapse" aria-labelledby="heading-${actionId}" data-bs-parent="#actionItems">
+                                <div class="accordion-body">
+                                    <p><strong>Assignee:</strong> ${assignee}</p>
+                                    <p><strong>Due Date:</strong> ${dueDate}</p>
+                                </div>
                             </div>
                         </div>
-                    </div>
-                `;
-                speakerSummaries.innerHTML += speakerItem;
-            });
+                    `;
+                    actionItems.innerHTML += actionItemHtml;
+                });
+            } else {
+                actionItems.innerHTML = '<p class="text-muted p-2">No explicit action items assigned during this meeting.</p>';
+            }
+        }
+        
+        // 5. Metadata
+        const metadataTable = document.getElementById('metadataTable');
+        if (metadataTable) {
+            metadataTable.innerHTML = '';
+            if (result.metadata) {
+                const metadata = result.metadata;
+                if (metadata.language_name) {
+                    addMetadataRow(metadataTable, 'Language', metadata.language_name);
+                } else {
+                    addMetadataRow(metadataTable, 'Language', metadata.language || 'Auto-detected');
+                }
+                
+                if (currentTranscript && currentTranscript.confidence_metrics) {
+                    const metrics = currentTranscript.confidence_metrics;
+                    addMetadataRow(metadataTable, 'Transcription Confidence', `${metrics.average}% (range: ${metrics.min}%-${metrics.max}%)`);
+                    if (metrics.low_confidence_percentage > 10) {
+                        addMetadataRow(metadataTable, 'Low Confidence Segments', `${metrics.low_confidence_count} segments (${metrics.low_confidence_percentage}%)`);
+                    }
+                }
+                if (metadata.total_duration_minutes) {
+                    addMetadataRow(metadataTable, 'Duration', `${metadata.total_duration_minutes} minutes`);
+                }
+                if (metadata.participant_count) {
+                    addMetadataRow(metadataTable, 'Participants', metadata.participant_count);
+                }
+                if (metadata.chunks_analyzed) {
+                    addMetadataRow(metadataTable, 'Chunks Analyzed', metadata.chunks_analyzed);
+                }
+            }
+        }
+        
+        // 6. Speaker Summaries
+        const speakerSummaries = document.getElementById('speakerSummaries');
+        if (speakerSummaries) {
+            speakerSummaries.innerHTML = '';
+            const spkSummDict = result.speaker_summaries || result.speaker_summary || {};
+            const entries = Object.entries(spkSummDict);
+            
+            if (entries.length > 0) {
+                entries.forEach(([speaker, summary], index) => {
+                    const speakerId = `speaker-${index}`;
+                    let briefSummary = "";
+                    let contributionsList = "";
+                    let actionsList = "";
+                    let questionsList = "";
+
+                    if (typeof summary === 'string') {
+                        briefSummary = summary;
+                    } else if (summary && typeof summary === 'object') {
+                        briefSummary = summary.brief_summary || summary.summary || summary.text || "";
+                        
+                        if (Array.isArray(summary.key_contributions) && summary.key_contributions.length > 0) {
+                            contributionsList = '<h6>Key Contributions:</h6><ul>' + 
+                                summary.key_contributions.map(c => `<li>${typeof c === 'string' ? c : (c.text || JSON.stringify(c))}</li>`).join('') + 
+                                '</ul>';
+                        }
+                        if (Array.isArray(summary.action_items) && summary.action_items.length > 0) {
+                            actionsList = '<h6>Action Items:</h6><ul>' + 
+                                summary.action_items.map(a => `<li>${typeof a === 'string' ? a : (a.action || a.text || JSON.stringify(a))}</li>`).join('') + 
+                                '</ul>';
+                        }
+                        if (Array.isArray(summary.questions_raised) && summary.questions_raised.length > 0) {
+                            questionsList = '<h6>Questions Raised:</h6><ul>' + 
+                                summary.questions_raised.map(q => `<li>${typeof q === 'string' ? q : (q.question || q.text || JSON.stringify(q))}</li>`).join('') + 
+                                '</ul>';
+                        }
+                    }
+                    
+                    const speakerItemHtml = `
+                        <div class="accordion-item">
+                            <h2 class="accordion-header" id="heading-${speakerId}">
+                                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-${speakerId}" aria-expanded="false" aria-controls="collapse-${speakerId}">
+                                    <strong>${speaker}</strong>
+                                </button>
+                            </h2>
+                            <div id="collapse-${speakerId}" class="accordion-collapse collapse" aria-labelledby="heading-${speakerId}" data-bs-parent="#speakerSummaries">
+                                <div class="accordion-body">
+                                    <p><strong>Summary:</strong> ${briefSummary || 'No summary available.'}</p>
+                                    ${contributionsList}
+                                    ${actionsList}
+                                    ${questionsList}
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    speakerSummaries.innerHTML += speakerItemHtml;
+                });
+            } else {
+                speakerSummaries.innerHTML = '<p class="text-muted p-2">No speaker-specific summaries generated.</p>';
+            }
         }
     }
 
@@ -1163,6 +1560,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let recordTimerInterval = null;
     let recordStartTime = null;
     let recordedAudioBlob = null;
+    let realtimeWebSocket = null;
 
     const startRecordBtn = document.getElementById('startRecordBtn');
     const stopRecordBtn = document.getElementById('stopRecordBtn');
@@ -1185,6 +1583,32 @@ document.addEventListener('DOMContentLoaded', () => {
     if (summarizeRecordedBtn) {
         summarizeRecordedBtn.addEventListener('click', handleSummarizeRecordedClick);
     }
+    const refineRecordBtn = document.getElementById('refineRecordTranscriptBtn');
+    if (refineRecordBtn) {
+        refineRecordBtn.addEventListener('click', handleRefineTranscriptClick);
+    }
+
+
+    function getMicrophoneStream() {
+        if (typeof navigator !== 'undefined' && navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function') {
+            return navigator.mediaDevices.getUserMedia({ audio: true });
+        }
+        const nav = (typeof navigator !== 'undefined') ? navigator : null;
+        const legacyGetUserMedia = nav ? (nav.getUserMedia || nav.webkitGetUserMedia || nav.mozGetUserMedia || nav.msGetUserMedia) : null;
+        if (typeof legacyGetUserMedia === 'function') {
+            return new Promise((resolve, reject) => {
+                legacyGetUserMedia.call(nav, { audio: true }, resolve, reject);
+            });
+        }
+        if (typeof window !== 'undefined' && !window.isSecureContext && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+            throw new Error('Microphone access is blocked over non-secure HTTP IP addresses. Please open http://localhost:8000 in your browser address bar.');
+        }
+        throw new Error('Microphone permission or navigator.mediaDevices is blocked by your browser settings. Please allow microphone access in your browser site settings.');
+    }
+
+    let audioContext = null;
+    let audioSource = null;
+    let audioProcessorNode = null;
 
     async function startRecording() {
         audioChunks = [];
@@ -1194,25 +1618,98 @@ document.addEventListener('DOMContentLoaded', () => {
         const trPreview = document.getElementById('recordTranscriptPreview');
         if (trPreview) trPreview.classList.add('d-none');
         
+        const liveContainer = document.getElementById('liveStreamContainer');
+        const liveBadge = document.getElementById('liveBadge');
+        const liveContent = document.getElementById('liveStreamContent');
+        const liveStatus = document.getElementById('liveStreamStatus');
+
+        if (liveContainer) liveContainer.classList.remove('d-none');
+        if (liveBadge) liveBadge.classList.remove('d-none');
+        if (liveContent) liveContent.innerHTML = '<em class="text-muted">Connecting live WebSocket stream... Speak into microphone.</em>';
+        if (liveStatus) liveStatus.innerText = 'Connecting...';
+
+        const lang = document.getElementById('recordLanguage') ? document.getElementById('recordLanguage').value : 'auto';
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${wsProtocol}//${window.location.host}/ws/realtime-audio?language=${lang}`;
+
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const stream = await getMicrophoneStream();
+
+            realtimeWebSocket = new WebSocket(wsUrl);
+
+            realtimeWebSocket.onopen = () => {
+                if (liveStatus) liveStatus.innerText = 'Live stream active. Listening...';
+                if (recordStatus) recordStatus.innerText = '⚡ Real-time audio streaming active! Speak into microphone.';
+            };
+
+            realtimeWebSocket.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'live_update' && data.segments) {
+                        renderLiveStreamSegments(data.segments);
+                    } else if (data.type === 'final_result' && data.result) {
+                        currentJobId = data.result.job_id;
+                        currentTranscript = data.result;
+                        if (trPreview) trPreview.classList.remove('d-none');
+                        if (data.result.raw_transcription) {
+                            renderInteractiveTranscript(data.result.raw_transcription, 'recordTranscriptPreviewText');
+                        }
+                        // Only close now that the final transcript has actually arrived —
+                        // closing on a fixed timer risked cutting the connection before
+                        // the server finished saving/sending it.
+                        if (realtimeWebSocket) realtimeWebSocket.close();
+                    }
+                } catch (err) {
+                    console.error("Error parsing WebSocket message:", err);
+                }
+            };
+
+            realtimeWebSocket.onerror = (err) => {
+                console.error("WebSocket error:", err);
+                if (liveStatus) liveStatus.innerText = 'Stream error';
+            };
             
-            // Try to find a supported mime type, fallback if not found
+            // Setup Web Audio API PCM 16kHz Streamer for WebSockets
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                audioSource = audioContext.createMediaStreamSource(stream);
+                audioProcessorNode = audioContext.createScriptProcessor(4096, 1, 1);
+
+                audioProcessorNode.onaudioprocess = (e) => {
+                    if (!realtimeWebSocket || realtimeWebSocket.readyState !== WebSocket.OPEN) return;
+                    const inputData = e.inputBuffer.getChannelData(0);
+                    const pcm16 = new Int16Array(inputData.length);
+                    for (let i = 0; i < inputData.length; i++) {
+                        let s = Math.max(-1, Math.min(1, inputData[i]));
+                        pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                    }
+                    realtimeWebSocket.send(pcm16.buffer);
+                };
+
+                // Route through a silent gain node instead of straight to speakers —
+                // ScriptProcessorNode needs a destination to fire onaudioprocess in some
+                // browsers, but connecting directly to destination plays the mic input
+                // back out loud, causing an acoustic feedback/echo loop that degrades
+                // transcription accuracy when not using headphones.
+                const silentGain = audioContext.createGain();
+                silentGain.gain.value = 0;
+
+                audioSource.connect(audioProcessorNode);
+                audioProcessorNode.connect(silentGain);
+                silentGain.connect(audioContext.destination);
+            } catch (pcmErr) {
+                console.warn("PCM AudioContext fallback:", pcmErr);
+            }
+            
             let mimeType = 'audio/webm';
-            if (!MediaRecorder.isTypeSupported(mimeType)) {
-                mimeType = 'audio/ogg';
-            }
-            if (!MediaRecorder.isTypeSupported(mimeType)) {
-                mimeType = 'audio/mp4';
-            }
-            if (!MediaRecorder.isTypeSupported(mimeType)) {
-                mimeType = ''; // Let browser decide
-            }
+            if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'audio/ogg';
+            if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'audio/mp4';
+            if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = '';
             
             const options = mimeType ? { mimeType } : {};
             mediaRecorder = new MediaRecorder(stream, options);
             
-            mediaRecorder.addEventListener('dataavailable', event => {
+            mediaRecorder.addEventListener('dataavailable', async (event) => {
                 if (event.data && event.data.size > 0) {
                     audioChunks.push(event.data);
                 }
@@ -1225,21 +1722,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 const audioUrl = URL.createObjectURL(recordedAudioBlob);
                 if (recordedAudioPlayback) recordedAudioPlayback.src = audioUrl;
                 if (recordPlaybackSection) recordPlaybackSection.classList.remove('d-none');
-                
-                // Keep the extension in window context to send to server
                 recordedAudioBlob.extension = extension;
                 
-                if (recordStatus) recordStatus.innerText = 'Recording stopped. You can preview the audio or process it.';
+                if (liveBadge) liveBadge.classList.add('d-none');
+                if (liveStatus) liveStatus.innerText = 'Stream ended';
+                if (recordStatus) recordStatus.innerText = 'Recording stopped. You can preview audio or summarize transcript.';
             });
             
-            mediaRecorder.start(1000);
+            mediaRecorder.start(1000); 
             recordStartTime = Date.now();
             updateTimer();
             recordTimerInterval = setInterval(updateTimer, 1000);
             
             if (startRecordBtn) startRecordBtn.classList.add('d-none');
             if (stopRecordBtn) stopRecordBtn.classList.remove('d-none');
-            if (recordStatus) recordStatus.innerText = 'Recording... Speak clearly into the microphone.';
             
         } catch (error) {
             console.error('Error starting voice recording:', error);
@@ -1248,10 +1744,57 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function renderLiveStreamSegments(segments) {
+        const container = document.getElementById('liveStreamContent');
+        if (!container) return;
+        if (!segments || segments.length === 0) {
+            container.innerHTML = '<em class="text-muted">Listening... Speak into microphone.</em>';
+            return;
+        }
+        let html = '';
+        segments.forEach(seg => {
+            const color = seg.color || '🔵';
+            const speaker = seg.speaker || 'Speaker 1';
+            const timeStr = seg.timestamp || '00:00';
+            const text = seg.text || '';
+            html += `<div class="mb-2 p-1 border-bottom border-secondary">
+                <span style="font-size: 1.1rem;">${color}</span> 
+                <strong class="text-info">${speaker}</strong> 
+                <span class="badge bg-secondary ms-1 me-2">${timeStr}</span>
+                <span>${text}</span>
+            </div>`;
+        });
+        container.innerHTML = html;
+        container.scrollTop = container.scrollHeight;
+    }
+
     function stopRecording() {
         if (mediaRecorder && mediaRecorder.state !== 'inactive') {
             mediaRecorder.stop();
             mediaRecorder.stream.getTracks().forEach(track => track.stop());
+        }
+        if (audioProcessorNode) {
+            try { audioProcessorNode.disconnect(); } catch (e) {}
+            audioProcessorNode = null;
+        }
+        if (audioSource) {
+            try { audioSource.disconnect(); } catch (e) {}
+            audioSource = null;
+        }
+        if (audioContext) {
+            try { audioContext.close(); } catch (e) {}
+            audioContext = null;
+        }
+        if (realtimeWebSocket && realtimeWebSocket.readyState === WebSocket.OPEN) {
+            realtimeWebSocket.send(JSON.stringify({ action: "STOP" }));
+            // Don't force-close here — wait for the server's 'final_result' message
+            // (handled in onmessage) so the transcript actually reaches the browser.
+            // Fallback safety close in case the server never responds.
+            setTimeout(() => {
+                if (realtimeWebSocket && realtimeWebSocket.readyState === WebSocket.OPEN) {
+                    realtimeWebSocket.close();
+                }
+            }, 30000);
         }
         clearInterval(recordTimerInterval);
         if (startRecordBtn) startRecordBtn.classList.remove('d-none');
@@ -1277,9 +1820,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const formData = new FormData();
         formData.append('file', recordedAudioBlob, `live_recording.${ext}`);
         formData.append('language', document.getElementById('recordLanguage').value);
-        formData.append('is_long_recording', document.getElementById('recordIsLong').checked);
+        formData.append('is_long_recording', document.getElementById('recordIsLong') ? document.getElementById('recordIsLong').checked : false);
         
         try {
+            const recordedUrl = URL.createObjectURL(recordedAudioBlob);
+            window.currentAudioStreamUrl = recordedUrl;
+            const recordedPlayer = document.getElementById('recordedAudioPlayback');
+            if (recordedPlayer) {
+                recordedPlayer.src = recordedUrl;
+            }
+
             const procStatus = document.getElementById('recordProcessingStatus');
             if (procStatus) procStatus.classList.remove('d-none');
             updateRecordProgress(0, 'Starting recorded audio processing...');
@@ -1343,13 +1893,18 @@ document.addEventListener('DOMContentLoaded', () => {
                         const trPreview = document.getElementById('recordTranscriptPreview');
                         if (trPreview) trPreview.classList.remove('d-none');
                         
-                        let textContent = '';
-                        currentTranscript.transcript.forEach(seg => {
-                            textContent += `[${seg.start_time_formatted}] Speaker ${seg.speaker}: ${seg.text}\n`;
-                        });
-                        
-                        const trPreviewText = document.getElementById('recordTranscriptPreviewText');
-                        if (trPreviewText) trPreviewText.innerText = textContent;
+                        if (data.result.segments && data.result.segments.length > 0) {
+                            renderInteractiveTranscript(data.result.segments, 'recordTranscriptPreviewText');
+                        } else if (data.result.raw_transcription) {
+                            renderInteractiveTranscript(data.result.raw_transcription, 'recordTranscriptPreviewText');
+                        } else {
+                            let textContent = '';
+                            currentTranscript.transcript.forEach(seg => {
+                                textContent += `[${seg.start_time_formatted}] Speaker ${seg.speaker}: ${seg.text}\n`;
+                            });
+                            const trPreviewText = document.getElementById('recordTranscriptPreviewText');
+                            if (trPreviewText) trPreviewText.innerText = textContent;
+                        }
                         
                         let successMsg = `Processing complete. `;
                         const selectedLanguage = document.getElementById('recordLanguage').value;
@@ -1381,13 +1936,20 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             document.getElementById('summaryProcessingStatus').classList.remove('d-none');
             document.getElementById('resultsSection').classList.add('d-none');
-            updateSummaryProgress(10, 'Starting summarization...');
+            updateSummaryProgress(10, 'Starting summarization with updated transcript...');
             
-            // Extract speakers
-            const speakers = new Set();
-            currentTranscript.transcript.forEach(segment => {
-                speakers.add(`Speaker ${segment.speaker}`);
-            });
+            // Extract live updated transcript from UI DOM containing human edits & auto-corrections
+            const updatedTranscriptText = extractEditedTranscriptFromDOM('recordTranscriptPreviewText') || currentTranscript.formatted_transcript.join('\n');
+            console.log("Sending updated recorded live transcript to LLM:", updatedTranscriptText);
+
+            // Extract participants (speakers) from edited transcript text
+            const editedParticipants = extractParticipantsFromEditedText(updatedTranscriptText);
+            const speakers = new Set(editedParticipants);
+            if (speakers.size === 0 && currentTranscript.transcript) {
+                currentTranscript.transcript.forEach(segment => {
+                    speakers.add(`Speaker ${segment.speaker}`);
+                });
+            }
             
             // Get additional context
             let additionalContext = null;
@@ -1397,10 +1959,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             
             const requestData = {
-                transcript: currentTranscript.formatted_transcript.join('\n'),
+                transcript: updatedTranscriptText,
                 participants: Array.from(speakers),
                 language: currentTranscript.language,
-                is_long_recording: document.getElementById('recordIsLong').checked,
+                is_long_recording: document.getElementById('recordIsLong') ? document.getElementById('recordIsLong').checked : false,
                 additional_context: additionalContext
             };
             

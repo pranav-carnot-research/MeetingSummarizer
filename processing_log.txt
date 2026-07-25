@@ -24,3 +24,137 @@ Seg [1181.14 - 1184.96]:  We can't, we cannot assume that that's the case.
 --- Diarization Merge ---
 Found 248 unique speaker turns across all chunks.
 Total transcribed segments before formatting: 403
+
+--- Chunk 1 Transcription ---
+Found 73 transcribed segments.
+Seg [7.66 - 13.5]:  I think I was trying to coordinate even with the IBM team because they have not sent the
+Seg [13.5 - 16.4]:  presentation yet for tomorrow's meeting.
+Seg [17.82 - 19.24]:  So that's one thing.
+
+--- Chunk 2 Transcription ---
+Found 137 transcribed segments.
+Seg [585.0 - 589.8]:  the speaker is a mic which listens to the conversation between the doctor and the patient.
+Seg [590.42 - 592.96]:  Like something you speak to text only.
+Seg [593.16 - 594.24]:  Correct, yeah.
+
+--- Chunk 3 Transcription ---
+Found 158 transcribed segments.
+Seg [1170.0 - 1176.92]:  have our products in this scribe solution as well as the technical decision support solution
+Seg [1176.92 - 1178.56]:  running on their platform.
+Seg [1179.06 - 1183.74]:  Okay, okay. Are these solutions running somewhere else now? I mean are these solutions live somewhere else?
+
+--- Diarization Merge ---
+Found 631 unique speaker turns across all chunks.
+Total transcribed segments before formatting: 368
+
+--- Chunk 1 Transcription ---
+Found 73 transcribed segments.
+Seg [7.66 - 13.5]:  I think I was trying to coordinate even with the IBM team because they have not sent the
+Seg [13.5 - 16.4]:  presentation yet for tomorrow's meeting.
+Seg [17.82 - 19.24]:  So that's one thing.
+
+--- Chunk 1 Transcription ---
+Found 73 transcribed segments.
+Seg [7.66 - 13.5]:  I think I was trying to coordinate even with the IBM team because they have not sent the
+Seg [13.5 - 16.4]:  presentation yet for tomorrow's meeting.
+Seg [17.82 - 19.24]:  So that's one thing.
+
+--- Chunk 2 Transcription ---
+Found 130 transcribed segments.
+Seg [585.0 - 589.8]:  the speaker is a mic which listens to the conversation between the doctor and the patient.
+Seg [590.42 - 592.96]:  Like something you speak to text only.
+Seg [593.16 - 594.24]:  Correct, yeah.
+
+--- Chunk 1 Transcription ---
+Found 73 transcribed segments.
+Seg [7.66 - 13.5]:  I think I was trying to coordinate even with the IBM team because they have not sent the
+Seg [13.5 - 16.4]:  presentation yet for tomorrow's meeting.
+Seg [17.82 - 19.24]:  So that's one thing.
+
+--- Chunk 1 Transcription ---
+Found 73 transcribed segments.
+Seg [7.66 - 13.5]:  I think I was trying to coordinate even with the IBM team because they have not sent the
+Seg [13.5 - 16.4]:  presentation yet for tomorrow's meeting.
+Seg [17.82 - 19.24]:  So that's one thing.
+
+--- Chunk 2 Transcription ---
+Found 124 transcribed segments.
+Seg [585.0 - 589.8]:  the speaker is a mic which listens to the conversation between the doctor and the patient.
+Seg [590.42 - 592.96]:  Like something you speak to text only.
+Seg [593.16 - 594.24]:  Correct, yeah.
+
+--- Chunk 3 Transcription ---
+Found 156 transcribed segments.
+Seg [1170.0 - 1176.92]:  have our products in this scribe solution as well as the technical decision support solution
+Seg [1176.92 - 1178.56]:  running on their platform.
+Seg [1179.06 - 1183.74]:  Okay, okay. Are these solutions running somewhere else now? I mean are these solutions live somewhere else?
+
+--- Diarization Merge ---
+Found 631 unique speaker turns across all chunks.
+Total transcribed segments before formatting: 353
+
+--- Chunk 1 Transcription ---
+Found 73 transcribed segments.
+Seg [7.66 - 13.5]:  I think I was trying to coordinate even with the IBM team because they have not sent the
+Seg [13.5 - 16.4]:  presentation yet for tomorrow's meeting.
+Seg [17.82 - 19.24]:  So that's one thing.
+
+--- Chunk 2 Transcription ---
+Found 110 transcribed segments.
+Seg [585.0 - 589.8]:  the speaker is a mic which listens to the conversation between the doctor and the patient.
+Seg [590.42 - 592.96]:  Like something you speak to text only.
+Seg [593.16 - 594.24]:  Correct, yeah.
+
+--- Chunk 3 Transcription ---
+Found 142 transcribed segments.
+Seg [1170.0 - 1176.92]:  have our products in this scribe solution as well as the technical decision support solution
+Seg [1176.92 - 1178.56]:  running on their platform.
+Seg [1179.06 - 1183.74]:  Okay, okay. Are these solutions running somewhere else now? I mean are these solutions live somewhere else?
+
+--- Diarization Merge ---
+Found 631 unique speaker turns across all chunks.
+Total transcribed segments before formatting: 325
+
+--- Chunk 1 Transcription ---
+Found 73 transcribed segments.
+Seg [7.66 - 13.5]:  I think I was trying to coordinate even with the IBM team because they have not sent the
+Seg [13.5 - 16.4]:  presentation yet for tomorrow's meeting.
+Seg [17.82 - 19.24]:  So that's one thing.
+
+--- Chunk 2 Transcription ---
+Found 135 transcribed segments.
+Seg [585.0 - 589.8]:  the speaker is a mic which listens to the conversation between the doctor and the patient.
+Seg [590.42 - 592.96]:  Like something you speak to text only.
+Seg [593.16 - 594.24]:  Correct, yeah.
+
+--- Chunk 3 Transcription ---
+Found 166 transcribed segments.
+Seg [1170.0 - 1176.92]:  have our products in this scribe solution as well as the technical decision support solution
+Seg [1176.92 - 1178.56]:  running on their platform.
+Seg [1179.06 - 1183.74]:  Okay, okay. Are these solutions running somewhere else now? I mean are these solutions live somewhere else?
+
+--- Diarization Merge ---
+Found 631 unique speaker turns across all chunks.
+Total transcribed segments before formatting: 374
+
+--- Chunk 1 Transcription ---
+Found 73 transcribed segments.
+Seg [7.66 - 13.5]:  I think I was trying to coordinate even with the IBM team because they have not sent the
+Seg [13.5 - 16.4]:  presentation yet for tomorrow's meeting.
+Seg [17.82 - 19.24]:  So that's one thing.
+
+--- Chunk 2 Transcription ---
+Found 124 transcribed segments.
+Seg [585.0 - 589.8]:  the speaker is a mic which listens to the conversation between the doctor and the patient.
+Seg [590.42 - 592.96]:  Like something you speak to text only.
+Seg [593.16 - 594.24]:  Correct, yeah.
+
+--- Chunk 3 Transcription ---
+Found 153 transcribed segments.
+Seg [1170.0 - 1176.92]:  have our products in this scribe solution as well as the technical decision support solution
+Seg [1176.92 - 1178.56]:  running on their platform.
+Seg [1179.06 - 1183.74]:  Okay, okay. Are these solutions running somewhere else now? I mean are these solutions live somewhere else?
+
+--- Diarization Merge ---
+Found 631 unique speaker turns across all chunks.
+Total transcribed segments before formatting: 350

@@ -1,0 +1,197 @@
+{
+  "reference_text": "So, me and Aniket, sir, are currently working on an agentic OS harness. So basically, it connects what the... it's kind of like how OpenSora and Ormis work, but it's mainly... it's mostly focused on small LLMs. So right, currently we're able to generate beautiful docs and PDFs, using natural language understanding to retrieve semantic meaning of the user and generate beautiful documents. Same goes for emails, we are using a... we're using OAuth and IMAP to read through the user's emails and categorize them via priority. So, if... if an email has a deadline in it, it is... it is categorized as a higher priority than others. Now, any questions? So, on what basis does it categorize the different emails? Like priority-wise? Right. So, if... let's... so let's say if it's a promotional email, it'll be categorized as the lowest, right? So, and if... let's say you... you have sent me an email saying that, \"These are the... the tasks. You have to complete this by 7:00 PM.\" Hm. So, now you have a deadline. So, now the email will be... categorizing that email as a higher priority because it has a deadline and... But I have a question. Will it... have you hardcoded this in the code, or is there a classifier that is going to be classifying these emails based on the deadline? So, is it hardcoded that promotional emails would definitely be low priority? No, I've used natural language understanding, so it's able to extract the semantic... But what in natural language understanding? How are you doing it exactly? Basically, it's able to understand via the LLM what the user is trying to say in the query itself. So, it's using a... the same model or a different model? Yeah, yeah. For... actually, there are two ways I'm using. So, I'm using a... I'm using Llama's 3.1 8B model. Through an... through Groq's API, right? So it's faster. And for on-prem, we're using Qwen's 2.5 7B model. Okay. But how are you classifying the emails? Again, I'm repeating my question. So, that's... so we have an intent classifier for it. So, it's kind of... Which model is used for the intent classifier? The same... the same one which we're using, Groq and... Qwen. Which one? The same? Actually, the Qwen is a fallback for... Groq. So, if... if the API hits a rate limit... then it switches back to... Oh, okay, okay, okay, okay. All right. Understood. And is there any on-prem situation here or is it all...? Yeah, it's on-prem as well. Like I said, Qwen is on-prem. Oh, Qwen is on-prem and Llama is through Groq API? Yeah. All right. Do you have anything more to say about its practical implications? So, we're able to draft emails... beautiful emails. We're able to do attachment understanding as well. And... we're able... also able to differentiate via... time and date as well. So, if you have a specific... so if you have a specific date or time-related query, the agent is able to extract that date and time format and will give you the specific email from that duration only. Yeah, yeah. Okay, just tell me, which agentic framework you're using? Which agentic framework you're using? So, it's more of a harness we're building around what already the... open source community already provided, so... Okay. And what are the next steps for your implementation? So, for next steps, we'll be categorizing emails based on if they're read or if they're unread. So, it's able to retrieve unread emails as well. So, which is actually a much better use case for our scenario because user won't be asking the agent to retrieve the read emails. They want... they want the understanding for the unread emails, right? So, we'll be doing that. And are you actually planning to deploy this in the future? Yeah. Okay. So, it's going to be a flagship product for Kahnma. All right. Um, I'm glad to know about all of this. And... thanks. No, you're supposed to interrupt me. Just interrupt me. Okay, any other project you're... Would you like to tell me something about your project now? Uh yeah, so my project is basically an on-prem AI agentic project where you talk to an AI chatbot, and it basically answers your daily queries. So, we have... we have different agents. We have an HR agent, we have an IT agent, we have a law agent. So, based on your queries, it helps you out. So, how are you able to map those specific agents to a specific query? So, based on the queries, I have two stages. Based on the query, we have an LLM, large LLM model that tries to understand what's going on. What is this model you are talking about? Uh, I don't know the exact name, but it's a classification model and it's used for classification processes only. And after it has a brief understanding of the prompt, after it has a semantic embedding basically of the prompt, there's a direct mapping to which agent it should go to. So, it's on-prem right now? It's completely on-prem right now. Okay, just tell me about the agentic logic which you have implemented in it. So, for now, the agentic logic is hierarchical. So, we start on top with the HR agent, who will try to manage all the queries, and then there are fallbacks to different agents. So, if I start with an IT query, for example, the first agent that technically would be called is an HR agent, but because it's IT, it will fallback to the IT agent. Let's suppose I'm trying to call the law agent, there'll fallback down to the law agent. That's the entire logic. So, you are probably using an intent classifier to...? Yeah, yeah. So, I just talked about that intent classifier. Okay, just... is there any reasoning or planning happening in that? So, all the reasoning is being done by the LLMs only, by the on-prem LLMs. And for now, there's a direct mapping because there are very few agents. We have around three agents for now. And are you using any LangGraph or LangChain kind of thing? Yeah...",
+  "turns": [
+    {
+      "speaker": "Speaker 1",
+      "text": "So, me and Aniket, sir, are currently working on an agentic OS harness. So basically, it connects what the... it's kind of like how OpenSora and Ormis work, but it's mainly... it's mostly focused on small LLMs. So right, currently we're able to generate beautiful docs and PDFs, using natural language understanding to retrieve semantic meaning of the user and generate beautiful documents. Same goes for emails, we are using a... we're using OAuth and IMAP to read through the user's emails and categorize them via priority. So, if... if an email has a deadline in it, it is... it is categorized as a higher priority than others. Now, any questions?"
+    },
+    {
+      "speaker": "Speaker 2",
+      "text": "So, on what basis does it categorize the different emails? Like priority-wise?"
+    },
+    {
+      "speaker": "Speaker 1",
+      "text": "Right. So, if... let's... so let's say if it's a promotional email, it'll be categorized as the lowest, right? So, and if... let's say you... you have sent me an email saying that, \"These are the... the tasks. You have to complete this by 7:00 PM.\" Hm. So, now you have a deadline. So, now the email will be... categorizing that email as a higher priority because it has a deadline and..."
+    },
+    {
+      "speaker": "Speaker 2",
+      "text": "But I have a question. Will it... have you hardcoded this in the code, or is there a classifier that is going to be classifying these emails based on the deadline? So, is it hardcoded that promotional emails would definitely be low priority?"
+    },
+    {
+      "speaker": "Speaker 1",
+      "text": "No, I've used natural language understanding, so it's able to extract the semantic..."
+    },
+    {
+      "speaker": "Speaker 2",
+      "text": "But what in natural language understanding? How are you doing it exactly?"
+    },
+    {
+      "speaker": "Speaker 1",
+      "text": "Basically, it's able to understand via the LLM what the user is trying to say in the query itself."
+    },
+    {
+      "speaker": "Speaker 2",
+      "text": "So, it's using a... the same model or a different model?"
+    },
+    {
+      "speaker": "Speaker 1",
+      "text": "Yeah, yeah. For... actually, there are two ways I'm using. So, I'm using a... I'm using Llama's 3.1 8B model. Through an... through Groq's API, right? So it's faster. And for on-prem, we're using Qwen's 2.5 7B model."
+    },
+    {
+      "speaker": "Speaker 2",
+      "text": "Okay. But how are you classifying the emails? Again, I'm repeating my question."
+    },
+    {
+      "speaker": "Speaker 1",
+      "text": "So, that's... so we have an intent classifier for it. So, it's kind of..."
+    },
+    {
+      "speaker": "Speaker 2",
+      "text": "Which model is used for the intent classifier?"
+    },
+    {
+      "speaker": "Speaker 1",
+      "text": "The same... the same one which we're using, Groq and... Qwen."
+    },
+    {
+      "speaker": "Speaker 2",
+      "text": "Which one? The same?"
+    },
+    {
+      "speaker": "Speaker 1",
+      "text": "Actually, the Qwen is a fallback for... Groq. So, if... if the API hits a rate limit... then it switches back to..."
+    },
+    {
+      "speaker": "Speaker 2",
+      "text": "Oh, okay, okay, okay, okay. All right. Understood. And is there any on-prem situation here or is it all...?"
+    },
+    {
+      "speaker": "Speaker 1",
+      "text": "Yeah, it's on-prem as well. Like I said, Qwen is on-prem."
+    },
+    {
+      "speaker": "Speaker 2",
+      "text": "Oh, Qwen is on-prem and Llama is through Groq API?"
+    },
+    {
+      "speaker": "Speaker 1",
+      "text": "Yeah."
+    },
+    {
+      "speaker": "Speaker 2",
+      "text": "All right. Do you have anything more to say about its practical implications?"
+    },
+    {
+      "speaker": "Speaker 1",
+      "text": "So, we're able to draft emails... beautiful emails. We're able to do attachment understanding as well. And... we're able... also able to differentiate via... time and date as well. So, if you have a specific... so if you have a specific date or time-related query, the agent is able to extract that date and time format and will give you the specific email from that duration only. Yeah, yeah."
+    },
+    {
+      "speaker": "Speaker 3",
+      "text": "Okay, just tell me, which agentic framework you're using? Which agentic framework you're using?"
+    },
+    {
+      "speaker": "Speaker 1",
+      "text": "So, it's more of a harness we're building around what already the... open source community already provided, so..."
+    },
+    {
+      "speaker": "Speaker 3",
+      "text": "Okay."
+    },
+    {
+      "speaker": "Speaker 4",
+      "text": "And what are the next steps for your implementation?"
+    },
+    {
+      "speaker": "Speaker 1",
+      "text": "So, for next steps, we'll be categorizing emails based on if they're read or if they're unread. So, it's able to retrieve unread emails as well. So, which is actually a much better use case for our scenario because user won't be asking the agent to retrieve the read emails. They want... they want the understanding for the unread emails, right? So, we'll be doing that."
+    },
+    {
+      "speaker": "Speaker 2",
+      "text": "And are you actually planning to deploy this in the future?"
+    },
+    {
+      "speaker": "Speaker 1",
+      "text": "Yeah."
+    },
+    {
+      "speaker": "Speaker 2",
+      "text": "Okay."
+    },
+    {
+      "speaker": "Speaker 1",
+      "text": "So, it's going to be a flagship product for Kahnma."
+    },
+    {
+      "speaker": "Speaker 2",
+      "text": "All right. Um, I'm glad to know about all of this. And... thanks. No, you're supposed to interrupt me. Just interrupt me."
+    },
+    {
+      "speaker": "Speaker 3",
+      "text": "Okay, any other project you're..."
+    },
+    {
+      "speaker": "Speaker 1",
+      "text": "Would you like to tell me something about your project now?"
+    },
+    {
+      "speaker": "Speaker 2",
+      "text": "Uh yeah, so my project is basically an on-prem AI agentic project where you talk to an AI chatbot, and it basically answers your daily queries. So, we have... we have different agents. We have an HR agent, we have an IT agent, we have a law agent. So, based on your queries, it helps you out."
+    },
+    {
+      "speaker": "Speaker 1",
+      "text": "So, how are you able to map those specific agents to a specific query?"
+    },
+    {
+      "speaker": "Speaker 2",
+      "text": "So, based on the queries, I have two stages. Based on the query, we have an LLM, large LLM model that tries to understand what's going on."
+    },
+    {
+      "speaker": "Speaker 1",
+      "text": "What is this model you are talking about?"
+    },
+    {
+      "speaker": "Speaker 2",
+      "text": "Uh, I don't know the exact name, but it's a classification model and it's used for classification processes only. And after it has a brief understanding of the prompt, after it has a semantic embedding basically of the prompt, there's a direct mapping to which agent it should go to."
+    },
+    {
+      "speaker": "Speaker 1",
+      "text": "So, it's on-prem right now?"
+    },
+    {
+      "speaker": "Speaker 2",
+      "text": "It's completely on-prem right now."
+    },
+    {
+      "speaker": "Speaker 3",
+      "text": "Okay, just tell me about the agentic logic which you have implemented in it."
+    },
+    {
+      "speaker": "Speaker 2",
+      "text": "So, for now, the agentic logic is hierarchical. So, we start on top with the HR agent, who will try to manage all the queries, and then there are fallbacks to different agents. So, if I start with an IT query, for example, the first agent that technically would be called is an HR agent, but because it's IT, it will fallback to the IT agent. Let's suppose I'm trying to call the law agent, there'll fallback down to the law agent. That's the entire logic."
+    },
+    {
+      "speaker": "Speaker 1",
+      "text": "So, you are probably using an intent classifier to...?"
+    },
+    {
+      "speaker": "Speaker 2",
+      "text": "Yeah, yeah. So, I just talked about that intent classifier."
+    },
+    {
+      "speaker": "Speaker 3",
+      "text": "Okay, just... is there any reasoning or planning happening in that?"
+    },
+    {
+      "speaker": "Speaker 2",
+      "text": "So, all the reasoning is being done by the LLMs only, by the on-prem LLMs. And for now, there's a direct mapping because there are very few agents. We have around three agents for now."
+    },
+    {
+      "speaker": "Speaker 4",
+      "text": "And are you using any LangGraph or LangChain kind of thing?"
+    },
+    {
+      "speaker": "Speaker 2",
+      "text": "Yeah..."
+    }
+  ]
+}

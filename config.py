@@ -13,8 +13,13 @@ class Settings(BaseSettings):
     # OpenAI Configuration (legacy, kept for optional fallback)
     OPENAI_API_KEY: Optional[str] = "uigyjrxcgijolk"
 
+    # Groq Configuration
+    GROQ_API_KEY: Optional[str] = None
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+
     # LLM Configuration
-    LLM_PROVIDER: str = "ollama"  # Options: "openai", "ollama"
+    LLM_PROVIDER: str = "ollama"  # Options: "openai", "ollama", "groq"
+
     # Ollama Configuration
     OLLAMA_API_BASE: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "mistral"
@@ -56,13 +61,19 @@ class Settings(BaseSettings):
 
     @validator("LLM_PROVIDER")
     def validate_llm_provider(cls, v, values):
-        if v not in ["openai", "ollama"]:
-            raise ValueError(f"LLM_PROVIDER must be 'openai' or 'ollama', got {v}")
+        if v not in ["openai", "ollama", "groq"]:
+            raise ValueError(f"LLM_PROVIDER must be 'openai', 'ollama', or 'groq', got {v}")
 
         # If using OpenAI, validate API key
         if v == "openai" and not values.get("OPENAI_API_KEY"):
             raise ValueError(
                 "OPENAI_API_KEY environment variable is required when LLM_PROVIDER is 'openai'"
+            )
+
+        # If using Groq, validate API key
+        if v == "groq" and not values.get("GROQ_API_KEY"):
+            raise ValueError(
+                "GROQ_API_KEY environment variable is required when LLM_PROVIDER is 'groq'"
             )
 
         return v

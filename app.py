@@ -175,6 +175,164 @@ def update_progress(progress, status):
     st.session_state.processing_progress = progress
     st.session_state.processing_status = status
 
+# ── Helper: color a single word by confidence ────────────────────────────────
+def _word_color(conf):
+    """Return (text_color, background_color) for a word confidence value."""
+    if conf is None:
+        return "#cccccc", "transparent"
+    if conf >= 90:
+        return "#4caf50", "rgba(76,175,80,0.12)"   # green
+    if conf >= 70:
+        return "#ff9800", "rgba(255,152,0,0.12)"    # orange
+    return "#f44336", "rgba(244,67,54,0.15)"         # red
+
+def _render_word_html(word_text, conf):
+    """Render a single word as an HTML span with color + hover tooltip."""
+    color, bg = _word_color(conf)
+    if conf is not None:
+        return (
+            f"<span title='{conf:.1f}%' style='"
+            f"color:{color}; background:{bg}; padding:1px 3px; "
+            f"border-radius:3px; cursor:default;'>"
+            f"{word_text}</span>"
+        )
+    return f"<span style='color:#ccc;'>{word_text}</span>"
+
+# ── Color-coded transcript renderer ──────────────────────────────────────────
+def render_color_coded_transcript():
+    """
+    Render the transcript with WORD-LEVEL color coding based on Whisper confidence.
+    Each word is individually colored:
+        🟢 Green  = High confidence (≥ 90%)
+        🟡 Orange = Medium confidence (70–89%)
+        🔴 Red    = Low confidence (< 70%)
+    Hover over any word to see its exact confidence percentage.
+    Uses data from st.session_state.audio_transcript.
+    """
+    audio_transcript = st.session_state.get("audio_transcript")
+    if not audio_transcript or "transcript" not in audio_transcript:
+        # Fallback: show plain text if no structured data
+        plain = st.session_state.get("transcript_content", "")
+        if plain:
+            st.text_area("Transcript", value=plain, height=400, disabled=True, label_visibility="collapsed")
+        else:
+            st.info("No transcript data available.")
+        return
+
+    # Helper function to render a list of segments
+    def _draw_segments_html(segment_list, is_raw=False):
+        html_lines = []
+        for seg in segment_list:
+            if is_raw:
+                ts = seg.get("start_formatted", "")
+                prefix = ""
+            else:
+                ts = seg.get("start_time_formatted", "")
+                speaker = seg.get("speaker", "?")
+                prefix = f"<b style='color:#aaa;'>Speaker {speaker}:</b> "
+
+            seg_conf = seg.get("confidence")
+
+            # Try to get word-level data from nested segments
+            words = []
+            seg_details = seg.get("segments", [])
+            if seg_details and isinstance(seg_details, list):
+                for sub in seg_details:
+                    if isinstance(sub, dict) and "words" in sub:
+                        words.extend(sub["words"])
+            
+            # fallback for raw segments if 'words' is directly in the segment
+            if not words and "words" in seg and isinstance(seg["words"], list):
+                words = seg["words"]
+
+            # Determine line-level dot indicator
+            if seg_conf is not None:
+                if seg_conf >= 90:
+                    dot = "🟢"
+                elif seg_conf >= 70:
+                    dot = "🟡"
+                else:
+                    dot = "🔴"
+                line_score = f"<span style='color:#888; font-size:11px;'>({seg_conf:.0f}%)</span>"
+            else:
+                dot = "⚫"
+                line_score = ""
+
+            # Build the text content — word-by-word if data exists, else line-level fallback
+            if words:
+                word_spans = []
+                for w in words:
+                    w_text = w.get("word", "")
+                    w_conf = w.get("confidence")  # already 0-100 scale
+                    word_spans.append(_render_word_html(w_text, w_conf))
+                text_html = " ".join(word_spans)
+            else:
+                # Fallback: color entire text by line-level confidence
+                text = seg.get("text", "")
+                color, bg = _word_color(seg_conf)
+                text_html = f"<span style='color:{color};'>{text}</span>"
+
+            line_html = (
+                f"<div style='padding:4px 0; border-bottom:1px solid #2a2a2a; line-height:1.7;'>"
+                f"{dot} "
+                f"<span style='color:#888; font-size:12px;'>[{ts}]</span> "
+                f"{prefix}"
+                f"{text_html} "
+                f"{line_score}"
+                f"</div>"
+            )
+            html_lines.append(line_html)
+
+        # Wrap in a scrollable container
+        return (
+            "<div style='background:#121212; border-radius:8px; padding:12px; "
+            "max-height:500px; overflow-y:auto; font-family:monospace; font-size:13px;'>"
+            + "\n".join(html_lines)
+            + "</div>"
+        )
+
+    # ── Confidence legend ─────────────────────────────────────────────────────
+    st.markdown(
+        "<div style='display:flex; gap:18px; margin-bottom:6px; font-size:13px;'>"
+        "<span>🟢 <b>High</b> (≥90%)</span>"
+        "<span>🟡 <b>Medium</b> (70–89%)</span>"
+        "<span>🔴 <b>Low</b> (&lt;70%)</span>"
+        "<span style='color:#888;'>⚫ <b>N/A</b></span>"
+        "<span style='color:#666; font-style:italic;'>💡 Hover over any word to see its confidence</span>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    # ── Overall stats bar ─────────────────────────────────────────────────────
+    confidence_metrics = audio_transcript.get("confidence_metrics", {})
+    if confidence_metrics and "average" in confidence_metrics:
+        avg = confidence_metrics["average"]
+        lo = confidence_metrics.get("min", "–")
+        hi = confidence_metrics.get("max", "–")
+        low_pct = confidence_metrics.get("low_confidence_percentage", 0)
+        bar_color = "#4caf50" if avg >= 90 else ("#ff9800" if avg >= 70 else "#f44336")
+        st.markdown(
+            f"<div style='background:#1e1e1e; border-radius:8px; padding:8px 14px; "
+            f"margin-bottom:12px; font-size:13px; color:#ccc; display:flex; gap:24px; align-items:center;'>"
+            f"<span>Avg: <b style='color:{bar_color}'>{avg}%</b></span>"
+            f"<span>Min: <b>{lo}%</b></span>"
+            f"<span>Max: <b>{hi}%</b></span>"
+            f"<span>Low-confidence lines: <b>{low_pct}%</b></span>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    # Check if we have raw transcription available
+    raw_segments = audio_transcript.get("raw_transcription")
+    if raw_segments:
+        view_tab1, view_tab2 = st.tabs(["🔊 Speaker-Diarized Transcript", "📝 Raw Whisper Transcription"])
+        with view_tab1:
+            st.markdown(_draw_segments_html(audio_transcript["transcript"], is_raw=False), unsafe_allow_html=True)
+        with view_tab2:
+            st.markdown(_draw_segments_html(raw_segments, is_raw=True), unsafe_allow_html=True)
+    else:
+        st.markdown(_draw_segments_html(audio_transcript["transcript"], is_raw=False), unsafe_allow_html=True)
+
 # Function to display meeting summary tab
 def display_meeting_summary():
     result = st.session_state.meeting_result
@@ -510,16 +668,10 @@ if input_method == "Upload Audio":
             progress_bar.empty()
             status_text.empty()
 
-    # If audio has been processed, show a preview
+    # If audio has been processed, show a preview with color-coded confidence
     if st.session_state.audio_processing_complete:
-        with st.expander("Preview Transcript", expanded=False):
-            st.text_area(
-                "Transcript",
-                value=st.session_state.transcript_content,
-                height=400,
-                disabled=True,
-                label_visibility="collapsed"
-            )
+        with st.expander("📊 Preview Transcript (Color-Coded Confidence)", expanded=False):
+            render_color_coded_transcript()
 
 elif input_method == "Real-Time Audio":
     st.info("Record audio directly from your microphone. The app will transcribe it in real-time.")
@@ -622,11 +774,28 @@ elif input_method == "Real-Time Audio":
                     import re
                     spk_match = re.search(r'Speaker\s+(\d+)', seg['speaker'])
                     spk_num = spk_match.group(1) if spk_match else seg['speaker']
+                    
+                    # Compute confidence level
+                    conf = seg.get("confidence")
+                    conf_lvl = None
+                    if conf is not None:
+                        conf_lvl = "high" if conf >= 90 else ("medium" if conf >= 70 else "low")
+                        
                     live_segments.append({
                         "speaker": spk_num,
                         "text": seg['text'],
                         "start_time_formatted": seg['timestamp'],
-                        "end_time_formatted": seg['timestamp']
+                        "end_time_formatted": seg['timestamp'],
+                        "confidence": conf,
+                        "confidence_level": conf_lvl,
+                        "segments": [{
+                            "text": seg['text'],
+                            "start": 0,
+                            "end": 0,
+                            "confidence": conf,
+                            "confidence_level": conf_lvl,
+                            "words": seg.get("words", [])
+                        }]
                     })
                     
         # 2. Fallback to raw transcriber text if no segments
@@ -637,14 +806,43 @@ elif input_method == "Real-Time Audio":
                     "speaker": "1",
                     "text": raw_text,
                     "start_time_formatted": "00:00",
-                    "end_time_formatted": "00:00"
+                    "end_time_formatted": "00:00",
+                    "confidence": 85.0,
+                    "confidence_level": "medium",
+                    "segments": [{
+                        "text": raw_text,
+                        "start": 0,
+                        "end": 0,
+                        "confidence": 85.0,
+                        "confidence_level": "medium",
+                        "words": []
+                    }]
                 })
                 
         # 3. Save live transcript text & metadata to session state
         if live_segments:
+            # Build raw segments lists
+            raw_transcription = getattr(transcriber, "raw_segments", [])
+            
+            # Compute confidence metrics
+            confidences = [seg.get("confidence") for seg in live_segments if seg.get("confidence") is not None]
+            confidence_metrics = {}
+            if confidences:
+                avg_conf = sum(confidences) / len(confidences)
+                low_conf_segs = [c for c in confidences if c < 70]
+                confidence_metrics = {
+                    "average": round(avg_conf, 2),
+                    "min": round(min(confidences), 2),
+                    "max": round(max(confidences), 2),
+                    "low_confidence_count": len(low_conf_segs),
+                    "low_confidence_percentage": round(100 * len(low_conf_segs) / len(confidences), 2)
+                }
+                
             st.session_state.audio_transcript = {
                 "transcript": live_segments,
-                "language": "en"  # Default to english for live mode
+                "raw_transcription": raw_transcription,
+                "language": "en",  # Default to english for live mode
+                "confidence_metrics": confidence_metrics
             }
             formatted_transcript = []
             for seg in live_segments:
@@ -813,10 +1011,10 @@ elif input_method == "Real-Time Audio":
             progress_bar.empty()
             status_text.empty()
     
-    # If audio has been processed, show a preview
+    # If audio has been processed, show a preview with color-coded confidence
     if st.session_state.audio_processing_complete:
-        with st.expander("Preview Final Transcript", expanded=False):
-            st.text(st.session_state.transcript_content[:1000] + ("..." if len(st.session_state.transcript_content) > 1000 else ""))
+        with st.expander("📊 Preview Final Transcript (Color-Coded Confidence)", expanded=False):
+            render_color_coded_transcript()
 
 elif input_method == "Upload Text":
     text_file = st.file_uploader(

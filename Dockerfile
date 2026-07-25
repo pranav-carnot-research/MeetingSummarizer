@@ -16,7 +16,11 @@ RUN apt-get update \
 # Copy requirements file
 COPY requirements.txt .
 
-# Install Python dependencies
+# Install CPU-only torch/torchaudio first (this VM has no GPU; the default
+# pip resolve pulls in several GB of unneeded CUDA wheels via whisper/pyannote)
+RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Install remaining Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
