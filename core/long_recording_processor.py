@@ -21,6 +21,11 @@ logger = logging.getLogger("long_audio_processor")
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
+# Global caches for models
+_whisper_cache = {}
+_pyannote_cache = {}
+_wespeaker_cache = None
+
 def split_audio(audio_path, chunk_duration=600, overlap=15):
     """
     Split long audio files into smaller chunks with overlap
@@ -133,23 +138,35 @@ def transcribe_audio_chunk(chunk_path, offset_seconds=0, language=None):
     Returns:
         List of transcription segments with adjusted timestamps and confidence scores
     """
-    # Load a larger model for better multilingual support
-    model = whisper.load_model("medium")
+    # Use cached model if available to avoid reloading from disk
+    model_size = "medium"
+    if model_size not in _whisper_cache:
+        logger.info(f"Loading Whisper model '{model_size}' from disk...")
+        _whisper_cache[model_size] = whisper.load_model(model_size)
+    else:
+        logger.info(f"Using cached Whisper model '{model_size}'")
+    model = _whisper_cache[model_size]
     
     # Load audio
     audio = librosa.load(chunk_path, sr=16000)[0]
     
+    # Use robust transcription options to prevent early stopping/hallucinations
+    transcribe_options = {
+        "word_timestamps": True,
+        "suppress_tokens": [-1],
+        "without_timestamps": False,
+        "max_initial_timestamp": None,
+        "fp16": torch.cuda.is_available(),
+        "condition_on_previous_text": False
+    }
+    
     # Transcribe with language specification if provided
     if language:
-        result = model.transcribe(audio, language=language)
+        result = model.transcribe(audio, language=language, **transcribe_options)
     else:
-        # First, detect the language from a sample
-        audio_sample = audio[:48000]  # Use a short sample for detection
-        detection_result = model.detect_language(audio_sample)
-        detected_language = detection_result[0]
-        
-        # Then transcribe with the detected language
-        result = model.transcribe(audio, language=detected_language)
+        # Let Whisper automatically detect the language
+        result = model.transcribe(audio, **transcribe_options)
+        detected_language = result.get("language")
         logger.info(f"Detected language: {detected_language}")
     
     # Adjust timestamps and add confidence information
@@ -189,23 +206,39 @@ def diarize_audio_chunk(chunk_path, offset_seconds=0):
     
     diarization_pipeline = Pipeline.from_pretrained(
         "pyannote/speaker-diarization-3.1",
-        use_auth_token=hf_token)
+        token=hf_token)
     
-    # Use GPU if available
-    diarization_pipeline.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+    # Use GPU if available (support CUDA and macOS MPS)
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+        logger.info("Using Apple Silicon GPU (MPS) for chunk diarization")
+    else:
+        device = torch.device("cpu")
+    diarization_pipeline.to(device)
     
     with ProgressHook() as hook:
         diarization_result = diarization_pipeline(chunk_path, hook=hook)
     
     # We need to adjust the timestamps in the diarization result
-    adjusted_result = diarization_result.shift(offset_seconds)
+    from pyannote.core import Annotation, Segment
+    adjusted_result = Annotation()
     
+    # Pyannote 4 returns a DiarizeOutput object, older versions return Annotation directly
+    source_annotation = diarization_result.speaker_diarization if hasattr(diarization_result, 'speaker_diarization') else diarization_result
+    
+    for turn, track, speaker in source_annotation.itertracks(yield_label=True):
+        shifted_turn = Segment(turn.start + offset_seconds, turn.end + offset_seconds)
+        adjusted_result[shifted_turn, track] = speaker
+        
     return adjusted_result
 
 def merge_diarization_results(diarization_results):
     """
     Merge multiple diarization results into a single result
-    with consistent speaker IDs across chunks
+    with consistent speaker IDs across chunks using WeSpeaker embeddings
+    and Cosine Similarity.
     
     Args:
         diarization_results: List of (diarization_result, chunk_info) tuples
@@ -213,31 +246,167 @@ def merge_diarization_results(diarization_results):
     Returns:
         Merged diarization result
     """
-    # This is complex and would require pyannote internals
-    # For simplicity, we'll concatenate the results and map speakers
-    # A production version would need speaker embedding clustering to identify same speakers across chunks
+    import torch
+    import numpy as np
+    from pathlib import Path
+    from pyannote.audio import Model, Inference
+    from pyannote.core import Segment
     
-    # Map speaker IDs across chunks (simple approach)
-    speaker_map = {}  # Maps original_chunk_id + speaker_id to global_speaker_id
+    global _wespeaker_cache
+    
+    # 1. Load WeSpeaker embedding model
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+        
+    emb_inference = None
+    if _wespeaker_cache is not None:
+        emb_inference = _wespeaker_cache
+        logger.info("Using cached WeSpeaker model for cross-chunk matching.")
+    else:
+        logger.info(f"Loading WeSpeaker model for cross-chunk matching on device: {device}")
+        try:
+            emb_bin = Path("./models/wespeaker-voxceleb-resnet34-LM/pytorch_model.bin")
+            emb_model = Model.from_pretrained(emb_bin)
+            emb_model.eval()
+            emb_model.to(device)
+            emb_inference = Inference(emb_model, window="whole")
+            _wespeaker_cache = emb_inference
+            logger.info("WeSpeaker model loaded successfully for cross-chunk matching.")
+        except Exception as e:
+            logger.error(f"Failed to load WeSpeaker model: {e}. Falling back to simple concatenation mapping.")
+
+    # 2. Extract embeddings for all unique speakers in each chunk
+    # maps chunk_speaker_key -> average embedding vector
+    speaker_embeddings = {}
+    
+    # Maps original_chunk_id + speaker_id -> list of turns
+    chunk_speaker_turns = {}
+    
+    for idx, (diarization, chunk) in enumerate(diarization_results):
+        source_annotation = diarization.speaker_diarization if hasattr(diarization, 'speaker_diarization') else diarization
+        for turn, _, speaker in source_annotation.itertracks(yield_label=True):
+            chunk_speaker_key = f"{idx}_{speaker}"
+            if chunk_speaker_key not in chunk_speaker_turns:
+                chunk_speaker_turns[chunk_speaker_key] = []
+            chunk_speaker_turns[chunk_speaker_key].append(turn)
+            
+        # Extract embeddings if WeSpeaker is loaded and file exists
+        chunk_path = chunk.get("path")
+        offset = chunk.get("start_time", 0)
+        if emb_inference and chunk_path and os.path.exists(chunk_path):
+            unique_speakers_in_chunk = {speaker for _, _, speaker in source_annotation.itertracks(yield_label=True)}
+            for speaker in unique_speakers_in_chunk:
+                chunk_speaker_key = f"{idx}_{speaker}"
+                turns = chunk_speaker_turns[chunk_speaker_key]
+                
+                # Filter turns to use for embedding (turns should have duration >= 0.5s)
+                # Sort turns by duration descending to get the best voice quality first
+                valid_turns = sorted([t for t in turns if (t.end - t.start) >= 0.5], key=lambda t: t.end - t.start, reverse=True)
+                
+                # Crop and extract embeddings for top 5 turns
+                embeddings = []
+                for turn in valid_turns[:5]:
+                    try:
+                        # Ensure we don't round past chunk duration
+                        import soundfile as sf
+                        info = sf.info(chunk_path)
+                        # Shift turn timestamps back to chunk-local time
+                        local_start = turn.start - offset
+                        local_end = turn.end - offset
+                        clipped_turn = Segment(max(0, local_start), min(local_end, info.duration - 0.01))
+                        if (clipped_turn.end - clipped_turn.start) >= 0.5:
+                            emb = emb_inference.crop(chunk_path, clipped_turn)
+                            embeddings.append(emb)
+                    except Exception:
+                        pass
+                        
+                if embeddings:
+                    speaker_embeddings[chunk_speaker_key] = np.mean(embeddings, axis=0)
+                    logger.info(f"Extracted voiceprint for {chunk_speaker_key} using {len(embeddings)} turns.")
+                else:
+                    # Fallback to whole chunk embedding
+                    try:
+                        emb = emb_inference(chunk_path)
+                        speaker_embeddings[chunk_speaker_key] = emb
+                        logger.info(f"Extracted fallback voiceprint for {chunk_speaker_key} from whole chunk.")
+                    except Exception as fallback_err:
+                        logger.warning(f"Could not extract voiceprint for {chunk_speaker_key}: {fallback_err}")
+
+    # 3. Match speakers across chunks using Cosine Similarity
+    def cosine_similarity(a, b):
+        a = a.flatten()
+        b = b.flatten()
+        norm_a = np.linalg.norm(a)
+        norm_b = np.linalg.norm(b)
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return float(np.dot(a, b) / (norm_a * norm_b))
+
+    speaker_map = {}  # Maps chunk_speaker_key -> global_speaker_id
     next_global_id = 0
     
-    merged_turns = []
+    # Registered global speakers list of {"id": int, "embeddings": list of vectors, "average_embedding": vector}
+    global_speakers = []
     
     for idx, (diarization, _) in enumerate(diarization_results):
-        for turn, _, speaker in diarization.itertracks(yield_label=True):
+        source_annotation = diarization.speaker_diarization if hasattr(diarization, 'speaker_diarization') else diarization
+        unique_speakers_in_chunk = {speaker for _, _, speaker in source_annotation.itertracks(yield_label=True)}
+        
+        for speaker in unique_speakers_in_chunk:
             chunk_speaker_key = f"{idx}_{speaker}"
+            emb = speaker_embeddings.get(chunk_speaker_key)
             
-            # Assign a global speaker ID if we haven't seen this chunk_speaker before
-            if chunk_speaker_key not in speaker_map:
-                speaker_map[chunk_speaker_key] = next_global_id
+            best_sim = -1.0
+            best_global_id = None
+            
+            # Compare current speaker's voiceprint with all existing global speaker voiceprints
+            if emb is not None:
+                for g_spk in global_speakers:
+                    if g_spk["average_embedding"] is not None:
+                        sim = cosine_similarity(emb, g_spk["average_embedding"])
+                        if sim > best_sim:
+                            best_sim = sim
+                            best_global_id = g_spk["id"]
+            
+            # Threshold for matching: 0.65
+            if best_sim >= 0.65 and best_global_id is not None:
+                speaker_map[chunk_speaker_key] = best_global_id
+                # Update running average embedding
+                g_spk = global_speakers[best_global_id]
+                g_spk["embeddings"].append(emb)
+                g_spk["average_embedding"] = np.mean(g_spk["embeddings"], axis=0)
+                logger.info(f"Mapped {chunk_speaker_key} to global Speaker {best_global_id} (similarity: {best_sim:.2f})")
+            else:
+                # Register new global speaker
+                global_id = next_global_id
                 next_global_id += 1
                 
-            global_speaker = speaker_map[chunk_speaker_key]
+                global_speakers.append({
+                    "id": global_id,
+                    "embeddings": [emb] if emb is not None else [],
+                    "average_embedding": emb
+                })
+                speaker_map[chunk_speaker_key] = global_id
+                if emb is not None:
+                    logger.info(f"Registered new global Speaker {global_id} for {chunk_speaker_key} (no match found, best similarity: {best_sim:.2f})")
+                else:
+                    logger.info(f"Registered new global Speaker {global_id} for {chunk_speaker_key} (no voice embedding available)")
+
+    # 4. Map turns to global IDs
+    merged_turns = []
+    for idx, (diarization, _) in enumerate(diarization_results):
+        source_annotation = diarization.speaker_diarization if hasattr(diarization, 'speaker_diarization') else diarization
+        for turn, _, speaker in source_annotation.itertracks(yield_label=True):
+            chunk_speaker_key = f"{idx}_{speaker}"
+            global_speaker = speaker_map.get(chunk_speaker_key, next_global_id)
             merged_turns.append((turn, global_speaker))
-    
+            
     # Sort turns by start time
     merged_turns.sort(key=lambda x: x[0].start)
-    
     return merged_turns
 
 def format_conversation(diarization_turns, transcription_segments):
@@ -337,15 +506,15 @@ def process_long_audio(audio_file_path, language=None, chunk_duration=600, progr
     try:
         # Check if file is MP3 and convert if needed
         from pathlib import Path
-        from services.audio_converter import is_mp3_file, convert_audio_to_wav
+        from services.audio_converter import needs_conversion, convert_audio_to_wav
         
         original_file = audio_file_path
-        if is_mp3_file(audio_file_path):
+        if needs_conversion(audio_file_path):
             if progress_callback:
-                progress_callback(5, f"Converting MP3 to WAV format")
+                progress_callback(5, f"Converting audio to WAV format")
             try:
                 audio_file_path = convert_audio_to_wav(audio_file_path)
-                logger.info(f"Converted MP3 to WAV: {audio_file_path}")
+                logger.info(f"Converted audio to WAV: {audio_file_path}")
             except Exception as e:
                 logger.error(f"Error converting MP3: {str(e)}")
                 # Continue with original file
@@ -358,6 +527,8 @@ def process_long_audio(audio_file_path, language=None, chunk_duration=600, progr
         chunks = split_audio(audio_file_path, chunk_duration=chunk_duration)
         metrics['total_chunks'] = len(chunks)
         metrics['step_times']['splitting'] = time.time() - step_start
+        
+
         
         if progress_callback:
             progress_callback(15, f"Split audio into {len(chunks)} chunks")
@@ -401,6 +572,14 @@ def process_long_audio(audio_file_path, language=None, chunk_duration=600, progr
             chunk_transcription = transcribe_audio_chunk(chunk_path, offset, language)
             all_transcription_segments.extend(chunk_transcription)
             
+            # --- DEBUGGING LOG ---
+            with open("processing_log.txt", "a") as logf:
+                logf.write(f"\n--- Chunk {i+1} Transcription ---\n")
+                logf.write(f"Found {len(chunk_transcription)} transcribed segments.\n")
+                for s in chunk_transcription[:3]: # Log first 3 segments
+                    logf.write(f"Seg [{s.get('start')} - {s.get('end')}]: {s.get('text')}\n")
+            # ---------------------
+            
             # If first chunk, store detected language
             if i == 0 and not language and chunk_transcription:
                 try:
@@ -413,12 +592,7 @@ def process_long_audio(audio_file_path, language=None, chunk_duration=600, progr
             chunk_diarization = diarize_audio_chunk(chunk_path, offset)
             all_diarization_results.append((chunk_diarization, chunk))
             
-            # Clean up temporary file
-            try:
-                os.unlink(chunk_path)
-            except:
-                pass
-            
+            # Clean up of temporary files is deferred until after diarization merging
             metrics['chunks_processed'] += 1
             
         if progress_callback:
@@ -428,6 +602,22 @@ def process_long_audio(audio_file_path, language=None, chunk_duration=600, progr
         step_start = time.time()
         merged_diarization_turns = merge_diarization_results(all_diarization_results)
         metrics['step_times']['merging'] = time.time() - step_start
+        
+        # Clean up chunk files after merging speaker IDs
+        for _, chunk in all_diarization_results:
+            try:
+                chunk_path = chunk.get("path")
+                if chunk_path and os.path.exists(chunk_path):
+                    os.unlink(chunk_path)
+            except Exception as e:
+                logger.warning(f"Failed to delete temporary chunk file {chunk_path}: {e}")
+        
+        # --- DEBUGGING LOG ---
+        with open("processing_log.txt", "a") as logf:
+            logf.write(f"\n--- Diarization Merge ---\n")
+            logf.write(f"Found {len(merged_diarization_turns)} unique speaker turns across all chunks.\n")
+            logf.write(f"Total transcribed segments before formatting: {len(all_transcription_segments)}\n")
+        # ---------------------
         
         if progress_callback:
             progress_callback(90, "Formatting conversation")

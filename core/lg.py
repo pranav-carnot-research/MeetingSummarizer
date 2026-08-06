@@ -4,13 +4,16 @@ import re
 from typing import Dict, List, TypedDict, Literal, Union, Optional
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from pydantic import BaseModel, Field, validator
 import logging
-from services.llm_service import get_ollama_llm
 from config import settings
+from core.prompts import CONTEXT_INSTRUCTION, ANALYZE_SYSTEM_PROMPT, SUMMARIZE_SYSTEM_PROMPT, EXTRACT_ACTIONS_SYSTEM_PROMPT
+from services.llm_service import get_ollama_llm, get_llm as get_llm_service
+import langchain_core.output_parsers as langchain_parsers
+from services.text_service import deduplicate_actions
 
 # Configure logging for this module
 logger = logging.getLogger(__name__)
@@ -18,17 +21,7 @@ logger = logging.getLogger(__name__)
 def robust_json_parse(text):
     """
     Attempt to parse JSON from text, with fallback mechanisms for malformed JSON
-    
-    Args:
-        text: Text that should contain JSON
-        
-    Returns:
-        Parsed JSON object or a default structure
     """
-    import json
-    import re
-    import logging
-    
     # First, try direct JSON parsing
     try:
         # Try to extract JSON if it's embedded in markdown or other text
@@ -147,6 +140,7 @@ class AgentState(TypedDict):
     transcript: str
     participants: List[str]
     language: Optional[str]
+    context: Optional[str]
     current_step: Literal["initialization", "analyze", "summarize", "extract_actions", "format_output", "complete"]
     analysis: Dict
     meeting_summary: MeetingSummary
@@ -156,7 +150,6 @@ class AgentState(TypedDict):
 # Initialize our LLM
 def get_llm():
     """Get the language model"""
-    from services.llm_service import get_llm as get_llm_service
     return get_llm_service(temperature=0, purpose="summarization")
 
 def merge_analyses(analyses):
@@ -206,28 +199,13 @@ def merge_analyses(analyses):
 # Define the nodes for our graph
 def create_analyze_node(language=None):
     """Create the analyze node with simplified prompts"""
-    language_instructions = ""
-    if language and language != "en":
-        language_instructions = f"Output in {language} language."
-    
-    system_message = SystemMessage(content=f"""Analyze the meeting transcript and return JSON with this exact structure:
-{{
-  "meeting_purpose": "brief purpose",
-  "main_topics": ["topic1", "topic2", "topic3"],
-  "emotional_tone": "brief tone description",
-  "participation_level": "brief participation description",
-  "disagreement_areas": ["area1", "area2"]
-}}
-
-Rules:
-- Return ONLY valid JSON
-- Keep descriptions brief (under 50 words)
-- List 3-5 main topics
-- List 0-3 disagreement areas
-{language_instructions}""")
+    language_instructions = f"Output in {language} language." if language and language != "en" else ""
+    system_message = SystemMessage(content=ANALYZE_SYSTEM_PROMPT.format(language_instructions=language_instructions))
     
     user_template = """Transcript: {transcript}
-Participants: {participants}"""
+Participants: {participants}
+
+""" + CONTEXT_INSTRUCTION
     
     def analyze_node(state: AgentState) -> AgentState:
         """Analyze the meeting transcript"""
@@ -253,7 +231,8 @@ Participants: {participants}"""
                     system_message,
                     HumanMessage(content=user_template.format(
                         transcript=transcript,
-                        participants=", ".join(participants)
+                        participants=", ".join(participants),
+                        context=state.get("context", "None provided.")
                     ))
                 ])
                 
@@ -297,7 +276,8 @@ Participants: {participants}"""
                     SystemMessage(content=f"Analyze chunk {i+1} of {len(chunks)}. {system_message.content}"),
                     HumanMessage(content=user_template.format(
                         transcript=chunk,
-                        participants=", ".join(participants)
+                        participants=", ".join(participants),
+                        context=state.get("context", "None provided.")
                     ))
                 ])
                 
@@ -408,19 +388,13 @@ def chunk_transcript(transcript, max_chunk_size=15000):  # Increased from 8000
 def create_summarize_node(language=None):
     """Create the summarize node with simplified prompts"""
     language_instructions = f"Output in {language} language." if language and language != "en" else ""
-    
-    system_message = SystemMessage(content=f"""Create a meeting summary with this JSON structure:
-{{
-  "summary": "2-3 sentence overview",
-  "key_points": ["point1", "point2", "point3"],
-  "decisions": ["decision1", "decision2"]
-}}
-
-Keep it concise and factual. {language_instructions}""")
+    system_message = SystemMessage(content=SUMMARIZE_SYSTEM_PROMPT.format(language_instructions=language_instructions))
     
     user_template = """Based on this analysis: {analysis}
 Transcript: {transcript}
-Participants: {participants}"""
+Participants: {participants}
+
+""" + CONTEXT_INSTRUCTION
     
     def summarize_node(state: AgentState) -> AgentState:
         """Generate a concise summary of the meeting"""
@@ -440,7 +414,8 @@ Participants: {participants}"""
                 HumanMessage(content=user_template.format(
                     transcript=state["transcript"][:5000],
                     analysis=json.dumps(state["analysis"]),
-                    participants=", ".join(state["participants"])
+                    participants=", ".join(state["participants"]),
+                    context=state.get("context", "None provided.")
                 ))
             ])
             
@@ -475,21 +450,12 @@ Participants: {participants}"""
 def create_extract_actions_node(language=None):
     """Create the action extraction node with simplified prompts"""
     language_instructions = f"Output in {language} language." if language and language != "en" else ""
-    
-    system_message = SystemMessage(content=f"""Extract action items as JSON array:
-[
-  {{
-    "action": "specific action",
-    "assignee": "person name or Unassigned",
-    "due_date": "date or Not specified",
-    "priority": "high/medium/low"
-  }}
-]
-
-Return empty array [] if no actions found. {language_instructions}""")
+    system_message = SystemMessage(content=EXTRACT_ACTIONS_SYSTEM_PROMPT.format(language_instructions=language_instructions))
     
     user_template = """Find action items in: {transcript}
-Participants: {participants}"""
+Participants: {participants}
+
+""" + CONTEXT_INSTRUCTION
     
     def extract_actions_node(state: AgentState) -> AgentState:
         """Extract action items from the meeting transcript"""
@@ -512,7 +478,8 @@ Participants: {participants}"""
                 system_message,
                 HumanMessage(content=user_template.format(
                     transcript=state["transcript"][:5000],
-                    participants=", ".join(state["participants"])
+                    participants=", ".join(state["participants"]),
+                    context=state.get("context", "None provided.")
                 ))
             ])
             
@@ -535,6 +502,8 @@ Participants: {participants}"""
                     priority=item.get("priority", "medium")
                 ))
             
+            action_items = deduplicate_actions(action_items)
+            
             return {**state, "action_items": action_items, "current_step": "format_output"}
             
         except Exception as e:
@@ -544,69 +513,17 @@ Participants: {participants}"""
     return extract_actions_node
 
 def create_format_output_node(language=None):
-    """Create the format output node with language-specific instructions"""
-    language_instructions = ""
-    if language:
-        if language == "hi":
-            language_instructions = "Respond in Hindi language using Devanagari script."
-        elif language != "en":  # For languages other than English
-            language_instructions = f"Respond in {language} language."
-    
-    # 4. Format the final output
-    system_message = SystemMessage(content=f"""You are responsible for creating the final meeting summary and action item report.
-    Format the provided information into a well-structured, professional report.
-    
-    Your output should be a JSON object with two sections:
-    - meeting_summary: Contains the summary, key points, and decisions
-    - action_items: The list of action items with their details
-    
-    Format your response as JSON. DO NOT include explanatory text before or after the JSON.
-    {language_instructions}""")
-    
-    user_template = """Meeting Summary: {meeting_summary}
-    
-    Action Items: {action_items}"""
-    
+    """Create the format output node (Python-based direct dictionary format)"""
     def format_output_node(state: AgentState) -> AgentState:
-        """Format the final output with the meeting summary and action items."""
-        # Convert Pydantic models to dictionaries for the LLM
+        """Format the final output with the meeting summary and action items directly."""
         meeting_summary_dict = state["meeting_summary"].model_dump()
         action_items_dict = [item.model_dump() for item in state["action_items"]]
         
-        try:
-            # Create a one-time template
-            prompt = ChatPromptTemplate.from_messages([
-                system_message,
-                HumanMessage(content=user_template.format(
-                    meeting_summary=json.dumps(meeting_summary_dict, indent=2),
-                    action_items=json.dumps(action_items_dict, indent=2)
-                ))
-            ])
-            
-            llm = get_llm()
-            chain = prompt | llm | JsonOutputParser()
-            final_output = chain.invoke({})
-            return {**state, "final_output": final_output, "current_step": "complete"}
-        except Exception as e:
-            logger.warning(f"JSON parsing error in format_output_node: {e}. Attempting recovery...")
-            
-            try:
-                # Fall back to string output and robust parsing
-                str_chain = prompt | llm | StrOutputParser()
-                raw_response = str_chain.invoke({})
-                
-                # Use robust parsing
-                parsed_result = robust_json_parse(raw_response)
-                logger.info("Successfully recovered JSON structure for final output")
-                return {**state, "final_output": parsed_result, "current_step": "complete"}
-            except Exception as recovery_error:
-                logger.error(f"Recovery failed: {recovery_error}")
-                # Return a simple structure using the existing data
-                final_output = {
-                    "meeting_summary": meeting_summary_dict,
-                    "action_items": action_items_dict
-                }
-                return {**state, "final_output": final_output, "current_step": "complete"}
+        final_output = {
+            "meeting_summary": meeting_summary_dict,
+            "action_items": action_items_dict
+        }
+        return {**state, "final_output": final_output, "current_step": "complete"}
     
     return format_output_node
 
@@ -635,7 +552,7 @@ def create_meeting_summarizer_graph(language=None):
     return workflow.compile()
 
 # Main function to run the meeting summarizer
-def summarize_meeting(transcript: str, participants: List[str], language: str = None, additional_context: str = None):
+def summarize_meeting(transcript: str, participants: List[str], language: str = None, context: str = None):
     """Run the meeting summarizer on a transcript and return the summary and action items."""
     # Check for empty inputs
     if not transcript or not transcript.strip():
@@ -656,7 +573,7 @@ def summarize_meeting(transcript: str, participants: List[str], language: str = 
             "transcript": transcript,
             "participants": participants,
             "language": language,
-            "additional_context": additional_context,  # Add additional context
+            "context": context,
             "current_step": "initialization",
             "analysis": {},
             "meeting_summary": MeetingSummary(summary="", key_points=[], decisions=[]),

@@ -1156,4 +1156,274 @@ document.addEventListener('DOMContentLoaded', () => {
         
         return languageMap[languageCode] || languageCode;
     }
+
+    // ── Live Recording Feature ──
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let recordTimerInterval = null;
+    let recordStartTime = null;
+    let recordedAudioBlob = null;
+
+    const startRecordBtn = document.getElementById('startRecordBtn');
+    const stopRecordBtn = document.getElementById('stopRecordBtn');
+    const recordingTimer = document.getElementById('recordingTimer');
+    const recordStatus = document.getElementById('recordStatus');
+    const recordPlaybackSection = document.getElementById('recordPlaybackSection');
+    const recordedAudioPlayback = document.getElementById('recordedAudioPlayback');
+    const processRecordedBtn = document.getElementById('processRecordedBtn');
+    const summarizeRecordedBtn = document.getElementById('summarizeRecordedBtn');
+
+    if (startRecordBtn) {
+        startRecordBtn.addEventListener('click', startRecording);
+    }
+    if (stopRecordBtn) {
+        stopRecordBtn.addEventListener('click', stopRecording);
+    }
+    if (processRecordedBtn) {
+        processRecordedBtn.addEventListener('click', processRecordedAudio);
+    }
+    if (summarizeRecordedBtn) {
+        summarizeRecordedBtn.addEventListener('click', handleSummarizeRecordedClick);
+    }
+
+    async function startRecording() {
+        audioChunks = [];
+        if (recordPlaybackSection) recordPlaybackSection.classList.add('d-none');
+        const procStatus = document.getElementById('recordProcessingStatus');
+        if (procStatus) procStatus.classList.add('d-none');
+        const trPreview = document.getElementById('recordTranscriptPreview');
+        if (trPreview) trPreview.classList.add('d-none');
+        
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            
+            // Try to find a supported mime type, fallback if not found
+            let mimeType = 'audio/webm';
+            if (!MediaRecorder.isTypeSupported(mimeType)) {
+                mimeType = 'audio/ogg';
+            }
+            if (!MediaRecorder.isTypeSupported(mimeType)) {
+                mimeType = 'audio/mp4';
+            }
+            if (!MediaRecorder.isTypeSupported(mimeType)) {
+                mimeType = ''; // Let browser decide
+            }
+            
+            const options = mimeType ? { mimeType } : {};
+            mediaRecorder = new MediaRecorder(stream, options);
+            
+            mediaRecorder.addEventListener('dataavailable', event => {
+                if (event.data && event.data.size > 0) {
+                    audioChunks.push(event.data);
+                }
+            });
+            
+            mediaRecorder.addEventListener('stop', () => {
+                const extension = mimeType.includes('webm') ? 'webm' : (mimeType.includes('ogg') ? 'ogg' : (mimeType.includes('mp4') ? 'mp4' : 'wav'));
+                recordedAudioBlob = new Blob(audioChunks, { type: mimeType || 'audio/wav' });
+                
+                const audioUrl = URL.createObjectURL(recordedAudioBlob);
+                if (recordedAudioPlayback) recordedAudioPlayback.src = audioUrl;
+                if (recordPlaybackSection) recordPlaybackSection.classList.remove('d-none');
+                
+                // Keep the extension in window context to send to server
+                recordedAudioBlob.extension = extension;
+                
+                if (recordStatus) recordStatus.innerText = 'Recording stopped. You can preview the audio or process it.';
+            });
+            
+            mediaRecorder.start(1000);
+            recordStartTime = Date.now();
+            updateTimer();
+            recordTimerInterval = setInterval(updateTimer, 1000);
+            
+            if (startRecordBtn) startRecordBtn.classList.add('d-none');
+            if (stopRecordBtn) stopRecordBtn.classList.remove('d-none');
+            if (recordStatus) recordStatus.innerText = 'Recording... Speak clearly into the microphone.';
+            
+        } catch (error) {
+            console.error('Error starting voice recording:', error);
+            if (recordStatus) recordStatus.innerText = `Error: ${error.message}`;
+            showAlert(`Could not access microphone: ${error.message}`, 'danger');
+        }
+    }
+
+    function stopRecording() {
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+            mediaRecorder.stop();
+            mediaRecorder.stream.getTracks().forEach(track => track.stop());
+        }
+        clearInterval(recordTimerInterval);
+        if (startRecordBtn) startRecordBtn.classList.remove('d-none');
+        if (stopRecordBtn) stopRecordBtn.classList.add('d-none');
+    }
+
+    function updateTimer() {
+        if (!recordingTimer) return;
+        const elapsedMs = Date.now() - recordStartTime;
+        const totalSecs = Math.floor(elapsedMs / 1000);
+        const mins = Math.floor(totalSecs / 60).toString().padStart(2, '0');
+        const secs = (totalSecs % 60).toString().padStart(2, '0');
+        recordingTimer.innerText = `${mins}:${secs}`;
+    }
+
+    async function processRecordedAudio() {
+        if (!recordedAudioBlob) {
+            showAlert('No recorded audio blob found', 'warning');
+            return;
+        }
+        
+        const ext = recordedAudioBlob.extension || 'webm';
+        const formData = new FormData();
+        formData.append('file', recordedAudioBlob, `live_recording.${ext}`);
+        formData.append('language', document.getElementById('recordLanguage').value);
+        formData.append('is_long_recording', document.getElementById('recordIsLong').checked);
+        
+        try {
+            const procStatus = document.getElementById('recordProcessingStatus');
+            if (procStatus) procStatus.classList.remove('d-none');
+            updateRecordProgress(0, 'Starting recorded audio processing...');
+            
+            const response = await fetch('/api/upload-audio', {
+                method: 'POST',
+                body: formData
+            });
+            
+            if (!response.ok) {
+                throw new Error(`Server responded with ${response.status}: ${await response.text()}`);
+            }
+            
+            const data = await response.json();
+            currentJobId = data.job_id;
+            
+            startRecordJobPolling(currentJobId);
+            
+        } catch (error) {
+            console.error('Error processing live recording:', error);
+            updateRecordProgress(0, `Error: ${error.message}`, true);
+        }
+    }
+
+    function updateRecordProgress(percent, message, isError = false) {
+        const progressBar = document.getElementById('recordProgressBar');
+        const statusText = document.getElementById('recordStatusText');
+        
+        if (progressBar) {
+            progressBar.style.width = `${percent}%`;
+            if (isError) {
+                progressBar.classList.add('bg-danger');
+            } else {
+                progressBar.classList.remove('bg-danger');
+            }
+        }
+        if (statusText) {
+            statusText.innerHTML = message;
+        }
+    }
+
+    function startRecordJobPolling(jobId) {
+        clearInterval(pollInterval);
+        
+        pollInterval = setInterval(async () => {
+            try {
+                const response = await fetch(`/api/job/${jobId}`);
+                if (!response.ok) {
+                    throw new Error(`Server responded with ${response.status}`);
+                }
+                
+                const data = await response.json();
+                updateRecordProgress(data.progress || 0, data.message || 'Processing...');
+                
+                if (data.status === 'completed') {
+                    clearInterval(pollInterval);
+                    if (data.result && data.result.transcript) {
+                        currentTranscript = data.result;
+                        
+                        // Show preview
+                        const trPreview = document.getElementById('recordTranscriptPreview');
+                        if (trPreview) trPreview.classList.remove('d-none');
+                        
+                        let textContent = '';
+                        currentTranscript.transcript.forEach(seg => {
+                            textContent += `[${seg.start_time_formatted}] Speaker ${seg.speaker}: ${seg.text}\n`;
+                        });
+                        
+                        const trPreviewText = document.getElementById('recordTranscriptPreviewText');
+                        if (trPreviewText) trPreviewText.innerText = textContent;
+                        
+                        let successMsg = `Processing complete. `;
+                        const selectedLanguage = document.getElementById('recordLanguage').value;
+                        const detectedLang = data.result.language;
+                        if (selectedLanguage === 'auto') {
+                            successMsg += `Language detected as: ${getLanguageDisplayName(detectedLang)}`;
+                        }
+                        
+                        updateRecordProgress(100, successMsg);
+                        showAlert('Recorded audio processed successfully!', 'success');
+                    }
+                } else if (data.status === 'failed') {
+                    clearInterval(pollInterval);
+                    updateRecordProgress(0, `Failed: ${data.message || 'Unknown error'}`, true);
+                    showAlert(`Processing failed: ${data.message}`, 'danger');
+                }
+            } catch (error) {
+                console.error('Error polling status:', error);
+            }
+        }, 2000);
+    }
+
+    async function handleSummarizeRecordedClick() {
+        if (!currentTranscript) {
+            showAlert('No transcript available to summarize', 'warning');
+            return;
+        }
+        
+        try {
+            document.getElementById('summaryProcessingStatus').classList.remove('d-none');
+            document.getElementById('resultsSection').classList.add('d-none');
+            updateSummaryProgress(10, 'Starting summarization...');
+            
+            // Extract speakers
+            const speakers = new Set();
+            currentTranscript.transcript.forEach(segment => {
+                speakers.add(`Speaker ${segment.speaker}`);
+            });
+            
+            // Get additional context
+            let additionalContext = null;
+            const contextInput = document.getElementById('meetingContext');
+            if (contextInput) {
+                additionalContext = contextInput.value.trim();
+            }
+            
+            const requestData = {
+                transcript: currentTranscript.formatted_transcript.join('\n'),
+                participants: Array.from(speakers),
+                language: currentTranscript.language,
+                is_long_recording: document.getElementById('recordIsLong').checked,
+                additional_context: additionalContext
+            };
+            
+            const response = await fetch('/api/summarize', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(requestData)
+            });
+            
+            if (!response.ok) {
+                throw new Error(`Server responded with ${response.status}: ${await response.text()}`);
+            }
+            
+            const data = await response.json();
+            currentJobId = data.job_id;
+            
+            startSummaryJobPolling(currentJobId);
+            
+        } catch (error) {
+            console.error('Error starting summarization:', error);
+            updateSummaryProgress(0, `Error: ${error.message}`, true);
+        }
+    }
 });
