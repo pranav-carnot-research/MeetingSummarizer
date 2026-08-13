@@ -413,6 +413,9 @@ def chunk_transcript(transcript, max_chunk_size=15000):  # Increased from 8000
                         current_chunk = sentence
             else:
                 current_chunk = para
+
+    if current_chunk:
+        chunks.append(current_chunk)
     
     return chunks
 

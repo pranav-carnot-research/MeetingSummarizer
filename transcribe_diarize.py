@@ -23,7 +23,7 @@ import os
 import sys
 import tempfile
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -370,7 +370,7 @@ def format_conversation(diarization_result: Annotation, transcription_segments: 
 
 def format_time(seconds: float) -> str:
     """Format seconds into HH:MM:SS."""
-    return datetime.utcfromtimestamp(seconds).strftime("%H:%M:%S")
+    return datetime.fromtimestamp(seconds, timezone.utc).strftime("%H:%M:%S")
 
 
 def process_audio(

@@ -29,3 +29,6 @@ action_items_optimizations_report.md
 meeting_summarizer_architecture.md
 meeting_summarizer_architecture_report.md
 unit_testing_report.md
+
+# Frontend UI folder (managed in separate repository)
+meeting-summariser-ui/

@@ -35,6 +35,14 @@ def extract_participants(transcript: str) -> List[str]:
     matches3 = re.findall(pattern3, transcript)
     for speaker_num in matches3:
         participants.add(f"Speaker {speaker_num}")
+        
+    # Pattern 4: [00:01] Name: Text or [00:01] Speaker 1: Text
+    pattern4 = r'(?:^|\n)\s*\[[0-9:.]+\]\s*([A-Za-z0-9_\s]+?)\s*:'
+    matches4 = re.findall(pattern4, transcript)
+    for name in matches4:
+        clean = name.strip()
+        if clean and len(clean) < 35:
+            participants.add(clean)
     
     # If we found participants, return them
     if participants:

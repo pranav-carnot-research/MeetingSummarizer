@@ -33,37 +33,47 @@ def update_job_status(
     progress: int = 0
 ) -> None:
     """
-    Update the status of a job in the job storage
-    
-    Args:
-        job_id: Unique identifier for the job
-        status: Current status of the job
-        message: Status message or description
-        progress: Progress percentage (0-100)
+    Update the status of a job in job storage and disk persistence
     """
-    JOB_STORAGE[job_id] = {
+    data = {
         "job_id": job_id,
         "status": status,
         "message": message,
+        "status_message": message,
         "progress": progress,
         "updated_at": datetime.now().isoformat()
     }
+    JOB_STORAGE[job_id] = data
+    
+    # Persist status file to disk for multi-process worker access
+    try:
+        status_path = os.path.join(STORAGE_DIR, f"status_{job_id}.json")
+        with open(status_path, 'w') as f:
+            json.dump(data, f)
+    except Exception as e:
+        logger.error(f"Error writing job status to disk for {job_id}: {str(e)}")
+
     logger.info(f"Job {job_id} updated: {status} - {message} ({progress}%)")
 
 def get_job_status(job_id: str) -> Optional[Dict[str, Any]]:
     """
-    Get the current status of a job
-    
-    Args:
-        job_id: Unique identifier for the job
-        
-    Returns:
-        Dictionary with job status information or None if not found
+    Get the current status of a job from memory or disk
     """
     status = JOB_STORAGE.get(job_id)
     
+    # If not in local process memory, check disk persistence
+    if not status:
+        try:
+            status_path = os.path.join(STORAGE_DIR, f"status_{job_id}.json")
+            if os.path.exists(status_path):
+                with open(status_path, 'r') as f:
+                    status = json.load(f)
+                    JOB_STORAGE[job_id] = status
+        except Exception as e:
+            logger.error(f"Error reading job status from disk for {job_id}: {str(e)}")
+    
     # If job is completed, include the result
-    if status and status["status"] == JobStatus.COMPLETED:
+    if status and status.get("status") == JobStatus.COMPLETED:
         result = get_job_result(job_id)
         if result:
             status["result"] = result

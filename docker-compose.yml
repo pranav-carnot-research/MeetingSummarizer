@@ -1,20 +1,27 @@
 version: '3.8'
 
 services:
-  # Meeting Summarizer API
+  # Meeting Summarizer API & React UI
   api:
     build: .
     ports:
       - "8000:8000"
     volumes:
-      - ./:/app
       - meeting_data:/app/job_results
+      - /home/gcpuser/.cache:/root/.cache
     env_file:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
-      - WORKERS=1
+      - WORKERS=4
       - LLM_PROVIDER=groq
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]

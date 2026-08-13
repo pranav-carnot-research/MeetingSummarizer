@@ -41,3 +41,4 @@ langdetect
 # NLI and Transformers
 transformers
 torchvision
+sentencepiece  # required by the DeBERTa-v3 NLI tokenizer

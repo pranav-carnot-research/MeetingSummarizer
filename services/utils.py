@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 import tempfile
 from typing import Optional, Dict, Any, List
@@ -18,7 +18,7 @@ def format_time(seconds: float) -> str:
     Returns:
         Formatted time string
     """
-    return datetime.utcfromtimestamp(seconds).strftime('%H:%M:%S')
+    return datetime.fromtimestamp(seconds, timezone.utc).strftime('%H:%M:%S')
 
 def create_temp_dir() -> str:
     """

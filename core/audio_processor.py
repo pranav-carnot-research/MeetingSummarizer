@@ -16,10 +16,17 @@ from pyannote.audio import Pipeline
 from pyannote.audio.pipelines.utils.hook import ProgressHook
 import torch
 import os
+os.environ["OMP_NUM_THREADS"] = "4"
+os.environ["MKL_NUM_THREADS"] = "4"
+try:
+    torch.set_num_threads(4)
+    torch.set_num_interop_threads(4)
+except Exception:
+    pass
 import numpy as np
 import librosa
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 import tempfile
 from typing import Dict, List, Any, Optional, Callable
 from pydub import AudioSegment
@@ -37,7 +44,7 @@ if torch.cuda.is_available():
 
 def format_time(seconds: float) -> str:
     """Format seconds into HH:MM:SS format"""
-    return datetime.utcfromtimestamp(seconds).strftime('%H:%M:%S')
+    return datetime.fromtimestamp(seconds, timezone.utc).strftime('%H:%M:%S')
 
 def preprocess_audio(audio_file: str) -> str:
     """
@@ -164,11 +171,11 @@ def transcribe_audio(audio_file: str, language: Optional[str] = None) -> Dict[st
         "beam_size": 5,                   # Deep beam search (5 beam width) instead of greedy decoding
         "best_of": 5,                     # Sample 5 candidate sequences
         "patience": 1.0,                  # Patience for beam search decoding
-        "temperature": 0.0,                # Single pass only — no retry cascade on low-confidence segments
+        "temperature": 0.0,               # Single pass only — no retry cascade on low-confidence segments
         "suppress_tokens": [-1],          # Don't suppress any tokens
         "without_timestamps": False,      # Keep exact word timestamps
         "initial_prompt": "This is a formal meeting transcript discussing technical project updates, action items, schedules, and metrics.",
-        "fp16": torch.cuda.is_available()  # Use fp16 on GPU
+        "fp16": False                     # Always use FP32 — FP16 on Tesla T4 causes incorrect language detection (English detected as Hindi)
     }
 
     # Add language if specified
@@ -185,12 +192,7 @@ def transcribe_audio(audio_file: str, language: Optional[str] = None) -> Dict[st
             detected_language = result.get('language')
             logger.info(f"Transcribed with specified language: {language}")
         else:
-            # Auto-detect mode: Whisper's high-level API detects language ONCE from
-            # the first ~30s and applies it to the whole file. For audio that
-            # code-switches between languages (e.g. Hindi + English), this forces
-            # the wrong language onto later segments and produces garbled/hallucinated
-            # text. Re-detecting per chunk fixes that, and as a side effect bounds
-            # the worst-case retry cost to a single chunk instead of the whole file.
+            # Auto-detect mode: use per-chunk language detection for code-switched audio
             result = _transcribe_with_per_chunk_language_detection(
                 model, audio, transcribe_options, chunk_duration=30
             )
@@ -378,7 +380,35 @@ def diarize_audio(audio_file: str) -> Any:
         cache_key = str(config_path)
         if cache_key not in _pyannote_cache:
             logger.info(f"Loading diarization pipeline from local path: {model_dir}")
-            pipeline = Pipeline.from_pretrained(config_path)
+            
+            # PyTorch 2.6+ / 2.8 compatibility: pyannote models use many internal
+            # classes in their checkpoint files. We must allowlist ALL of them via
+            # add_safe_globals. We import the full pyannote.audio.core.task module
+            # and register every class it exposes to avoid chasing them one by one.
+            import torch.serialization
+            import inspect
+            try:
+                from torch import torch_version
+                import pyannote.audio.core.task as _pann_task
+                import pyannote.audio.core.model as _pann_model
+
+                # Collect every class defined in these modules
+                _safe_classes = [torch_version.TorchVersion]
+                for _name, _obj in inspect.getmembers(_pann_task, inspect.isclass):
+                    _safe_classes.append(_obj)
+                for _name, _obj in inspect.getmembers(_pann_model, inspect.isclass):
+                    _safe_classes.append(_obj)
+
+                torch.serialization.add_safe_globals(_safe_classes)
+                logger.info(f"Registered {len(_safe_classes)} pyannote classes in torch safe_globals")
+            except Exception as _e:
+                logger.warning(f"add_safe_globals partial/skipped: {_e}")
+
+            # Belt-and-suspenders: use safe_globals context manager which
+            # works even if pyannote cached its torch.load reference at import time
+            with torch.serialization.safe_globals([]):
+                pipeline = Pipeline.from_pretrained(config_path)
+
             pipeline.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
             _pyannote_cache[cache_key] = pipeline
         else:

@@ -6,7 +6,7 @@ import os
 import librosa
 import time
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone
 import tempfile
 import soundfile as sf
 from pydub import AudioSegment
@@ -481,7 +481,7 @@ def format_conversation(diarization_turns, transcription_segments):
 
 def format_time(seconds):
     """Format seconds into HH:MM:SS format"""
-    return datetime.utcfromtimestamp(seconds).strftime('%H:%M:%S')
+    return datetime.fromtimestamp(seconds, timezone.utc).strftime('%H:%M:%S')
 
 def process_long_audio(audio_file_path, language=None, chunk_duration=600, progress_callback=None):
     """

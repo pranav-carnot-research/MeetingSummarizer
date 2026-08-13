@@ -113,15 +113,20 @@ def create_chat_prompt_template(system_prompt, user_prompt, use_simple_format=Fa
     """Create a chat prompt template with Ollama optimization"""
     try:
         from langchain_core.prompts import ChatPromptTemplate
-        
+        from langchain_core.messages import SystemMessage
+
         if settings.LLM_PROVIDER == "ollama" and use_simple_format:
             # Simplified format for Ollama
             combined_prompt = f"{system_prompt}\n\n{user_prompt}"
             return ChatPromptTemplate.from_template(combined_prompt)
         else:
-            # Standard format
+            # System prompts here are already fully rendered Python strings (no
+            # runtime variables to fill in) and often contain literal JSON example
+            # braces — passing them as a plain SystemMessage skips LangChain's own
+            # template parsing entirely, avoiding "nested replacement fields" errors
+            # on those braces. Only the human/user prompt needs real templating.
             return ChatPromptTemplate.from_messages([
-                ("system", system_prompt),
+                SystemMessage(content=system_prompt),
                 ("human", user_prompt)
             ])
     except ImportError:
@@ -131,14 +136,25 @@ def create_chat_prompt_template(system_prompt, user_prompt, use_simple_format=Fa
 def create_output_parser():
     """
     Create an appropriate output parser based on the LLM provider
-    
+
     Returns:
         A configured output parser
     """
     try:
         from langchain_core.output_parsers import JsonOutputParser
-        
-        return JsonOutputParser()
+
+        class RobustJsonOutputParser(JsonOutputParser):
+            """Strips any conversational preamble/trailing text some models add
+            before/after the JSON object (e.g. "Here is the summary:\\n\\n{...}"),
+            which otherwise breaks strict JSON parsing."""
+            def parse(self, text: str):
+                start = text.find('{')
+                end = text.rfind('}')
+                if start != -1 and end != -1 and end > start:
+                    text = text[start:end + 1]
+                return super().parse(text)
+
+        return RobustJsonOutputParser()
     except ImportError:
         logger.error("langchain_core not installed. Run: pip install langchain-core")
         raise

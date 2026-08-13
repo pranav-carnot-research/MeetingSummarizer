@@ -1,7 +1,15 @@
-# Use Python 3.9 as base image
-FROM python:3.9-slim
+# Stage 1: Build React Frontend UI (meeting-summariser-ui)
+FROM node:20-alpine AS ui-builder
+WORKDIR /ui
+COPY meeting-summariser-ui/package*.json ./
+RUN npm install
+COPY meeting-summariser-ui/ .
+ARG BUILD_TIMESTAMP
+ENV VITE_API_URL=""
+RUN npm run build
 
-# Set working directory
+# Stage 2: Python Backend Application
+FROM python:3.9-slim
 WORKDIR /app
 
 # Install system dependencies
@@ -16,15 +24,14 @@ RUN apt-get update \
 # Copy requirements file
 COPY requirements.txt .
 
-# Install CPU-only torch/torchaudio first (this VM has no GPU; the default
-# pip resolve pulls in several GB of unneeded CUDA wheels via whisper/pyannote)
-RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-
-# Install remaining Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install CUDA-enabled PyTorch, torchaudio, and Python dependencies in a single layer
+RUN pip install --no-cache-dir torch torchaudio --extra-index-url https://download.pytorch.org/whl/cu121 -r requirements.txt
 
 # Copy application code
 COPY . .
+
+# Copy compiled React UI build into application
+COPY --from=ui-builder /ui/dist ./meeting-summariser-ui/dist
 
 # Create storage directory
 RUN mkdir -p job_results
@@ -38,5 +45,5 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Expose port
 EXPOSE 8000
 
-# Command to run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Command to run the application with multi-process workers
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
