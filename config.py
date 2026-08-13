@@ -32,9 +32,26 @@ class Settings(BaseSettings):
     OLLAMA_TEMPERATURE: float = 0.1  # Lower for more consistent JSON
     OLLAMA_MAX_RETRIES: int = 3
 
-    # Audio Processing
+    # Summarization pipeline
+    ENABLE_REFINEMENT_LOOP: bool = True  # NLI critique + refinement referee agents
+
+    # Audio Processing & Tier Restrictions
     HUGGINGFACE_TOKEN: Optional[str] = None
     DIARIZATION_MODEL_PATH: str = "./models/speaker-diarization-3.1"
+    
+    # Audio Tier Restrictions
+    FREE_TIER_MAX_DURATION_SEC: int = 300       # 5 minutes
+    FREE_TIER_MAX_SIZE_MB: int = 50            # 50 MB
+    PREMIUM_TIER_MAX_DURATION_SEC: int = 10800  # 180 minutes (3 hours)
+    PREMIUM_TIER_MAX_SIZE_MB: int = 500        # 500 MB
+
+    @property
+    def PREMIERE_TIER_MAX_DURATION_SEC(self):
+        return self.PREMIUM_TIER_MAX_DURATION_SEC
+
+    @property
+    def PREMIERE_TIER_MAX_SIZE_MB(self):
+        return self.PREMIUM_TIER_MAX_SIZE_MB
 
     # Storage
     STORAGE_DIR: str = "job_results"

@@ -1,12 +1,20 @@
 from fastapi import FastAPI, File, UploadFile, BackgroundTasks, Form, HTTPException, Depends, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any, Union
 import uuid
 import os
+os.environ["OMP_NUM_THREADS"] = "4"
+os.environ["MKL_NUM_THREADS"] = "4"
+import torch
+try:
+    torch.set_num_threads(4)
+    torch.set_num_interop_threads(4)
+except Exception:
+    pass
 import re
 import shutil
 import tempfile
@@ -52,10 +60,14 @@ os.makedirs("recordings", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.mount("/recordings", StaticFiles(directory="recordings"), name="recordings")
 
+UI_DIST_DIR = Path("meeting-summariser-ui/dist")
+if UI_DIST_DIR.exists() and (UI_DIST_DIR / "assets").exists():
+    app.mount("/assets", StaticFiles(directory=str(UI_DIST_DIR / "assets")), name="ui-assets")
+
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8000", "http://localhost:5173", "http://127.0.0.1:8000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -90,7 +102,10 @@ class VocabularyRequest(BaseModel):
 @app.get("/", response_class=HTMLResponse)
 async def get_index(request: Request):
     """Serve the main application page"""
+    if UI_DIST_DIR.exists() and (UI_DIST_DIR / "index.html").exists():
+        return HTMLResponse(content=(UI_DIST_DIR / "index.html").read_text())
     return templates.TemplateResponse(request, "index.html")
+
 
 # Endpoint to get supported languages
 @app.get("/api/languages", response_model=List[LanguageOption])
@@ -110,38 +125,104 @@ async def get_languages():
     ]
     return languages
 
+def get_audio_duration_seconds(file_path: str) -> float:
+    """Calculate audio file duration in seconds using soundfile or pydub fallback"""
+    try:
+        import soundfile as sf
+        info = sf.info(file_path)
+        return float(info.duration)
+    except Exception:
+        try:
+            from pydub import AudioSegment
+            seg = AudioSegment.from_file(file_path)
+            return len(seg) / 1000.0
+        except Exception as e:
+            logger.warning(f"Could not determine audio duration for {file_path}: {e}")
+            return 0.0
+
+# Endpoint to get tier limits
+@app.get("/api/tiers")
+async def get_tier_config():
+    """Get limits for Free Demo and Premium tiers"""
+    return {
+        "free": {
+            "name": "Free Demo",
+            "max_duration_sec": settings.FREE_TIER_MAX_DURATION_SEC,
+            "max_size_mb": settings.FREE_TIER_MAX_SIZE_MB,
+        },
+        "premium": {
+            "name": "Premium",
+            "max_duration_sec": settings.PREMIUM_TIER_MAX_DURATION_SEC,
+            "max_size_mb": settings.PREMIUM_TIER_MAX_SIZE_MB,
+        },
+        "premiere": {
+            "name": "Premium",
+            "max_duration_sec": settings.PREMIUM_TIER_MAX_DURATION_SEC,
+            "max_size_mb": settings.PREMIUM_TIER_MAX_SIZE_MB,
+        }
+    }
+
 # Endpoint to upload and process audio
 @app.post("/api/upload-audio", response_model=JobResponse)
 async def upload_audio(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     language: Optional[str] = Form(None),
-    is_long_recording: bool = Form(False)
+    is_long_recording: bool = Form(False),
+    tier: str = Form("free"),
+    is_subscribed: bool = Form(False)
 ):
     """
-    Upload an audio file for processing.
-    
-    - The file will be processed in the background
-    - Speaker diarization will be performed automatically
-    - Returns a job ID that can be used to check progress
+    Upload an audio file for processing with tier duration, file size, and subscription checks.
     """
-    # Generate a unique job ID
-    job_id = str(uuid.uuid4())
-    
-    # Save the uploaded file to a temporary location
+    selected_tier = (tier or "free").lower().strip()
+    is_free_tier = selected_tier == "free"
+
+    # Enforce strict restriction on Premium Tier (Payment gateway pending)
+    if not is_free_tier:
+        raise HTTPException(
+            status_code=403,
+            detail="Premium Tier audio processing is currently restricted as payment gateway integration is pending. Please stay within Free Demo limits (Max 5 minutes & 50 MB)."
+        )
+
+    max_size_mb = settings.FREE_TIER_MAX_SIZE_MB
+    max_duration_sec = settings.FREE_TIER_MAX_DURATION_SEC
+    max_size_bytes = max_size_mb * 1024 * 1024
+
+    content = await file.read()
+    if len(content) > max_size_bytes:
+        size_in_mb = len(content) / (1024 * 1024)
+        raise HTTPException(
+            status_code=400,
+            detail=f"File size ({size_in_mb:.1f} MB) exceeds Free Demo limit of {max_size_mb} MB. Premium tier uploads are currently restricted."
+        )
+
+    # Save temporary file for duration check and processing
     audio_file_path = None
     try:
-        # Create a temporary file with the correct extension
         suffix = f".{file.filename.split('.')[-1]}"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            # Write the uploaded file content
-            content = await file.read()
             tmp.write(content)
             audio_file_path = tmp.name
-        
+
+        # Check audio duration
+        duration_sec = get_audio_duration_seconds(audio_file_path)
+        if duration_sec > max_duration_sec:
+            if os.path.exists(audio_file_path):
+                os.unlink(audio_file_path)
+            duration_mins = duration_sec / 60.0
+            max_duration_mins = max_duration_sec / 60.0
+            raise HTTPException(
+                status_code=400,
+                detail=f"Audio duration ({duration_mins:.1f} mins) exceeds Free Demo limit of {max_duration_mins:.0f} mins. Premium tier uploads are currently restricted."
+            )
+
+        # Generate a unique job ID
+        job_id = str(uuid.uuid4())
+
         # Initialize job status
         update_job_status(job_id, JobStatus.PENDING, "Audio file received, processing will start soon")
-        
+
         # Process the audio file in the background
         background_tasks.add_task(
             process_audio_background,
@@ -150,11 +231,12 @@ async def upload_audio(
             language,
             is_long_recording
         )
-        
+
         return {"job_id": job_id, "status": "pending"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing audio upload: {str(e)}")
-        # Clean up temporary file if it exists
         if audio_file_path and os.path.exists(audio_file_path):
             os.unlink(audio_file_path)
         raise HTTPException(status_code=500, detail=f"Error processing audio: {str(e)}")
@@ -162,7 +244,7 @@ async def upload_audio(
 # Background task to process audio
 # Updated process_audio_background function in main.py
 
-async def process_audio_background(job_id: str, audio_path: str, language: Optional[str], is_long_recording: bool):
+def process_audio_background(job_id: str, audio_path: str, language: Optional[str], is_long_recording: bool):
     """Process audio file in the background and update job status"""
     temp_files = []  # Track any temporary files we create
     
@@ -234,11 +316,9 @@ async def process_audio_background(job_id: str, audio_path: str, language: Optio
             result = process_long_audio(audio_path_to_process, language=language, progress_callback=progress_callback)
         else:
             # Process standard audio
+            update_job_status(job_id, JobStatus.PROCESSING, "Transcribing speech & identifying speakers with AI...", progress=25)
             result = process_audio_file(audio_path_to_process, language=language)
-            # Simulate progress updates
-            update_job_status(job_id, JobStatus.PROCESSING, "Transcribing audio", progress=33)
-            update_job_status(job_id, JobStatus.PROCESSING, "Identifying speakers", progress=66)
-            update_job_status(job_id, JobStatus.PROCESSING, "Finalizing transcript", progress=90)
+            update_job_status(job_id, JobStatus.PROCESSING, "Finalizing transcript & speaker segments", progress=90)
         
         # Verify we got results - sanity check
         if not result.get('transcript') or not result.get('formatted_transcript'):
@@ -389,13 +469,13 @@ async def summarize(background_tasks: BackgroundTasks, request: ProcessRequest):
     return {"job_id": job_id, "status": "pending"}
 
 # Background task to generate summary
-async def summarize_background(
+def summarize_background(
     job_id: str, 
     transcript: str, 
     participants: List[str], 
     language: Optional[str],
     is_long_recording: bool,
-    additional_context: Optional[str] = None  # Add parameter
+    additional_context: Optional[str] = None
 ):
     """Generate meeting summary in the background and update job status"""
     try:
@@ -634,6 +714,18 @@ async def health_check():
         "environment": os.environ.get("ENVIRONMENT", "development"),
         "timestamp": datetime.now().isoformat()
     }
+
+@app.get("/{catchall:path}")
+async def serve_react_app(catchall: str, request: Request):
+    """Serve React frontend SPA routes or static files"""
+    if catchall.startswith("api/") or catchall.startswith("static/") or catchall.startswith("recordings/") or catchall.startswith("ws"):
+        raise HTTPException(status_code=404, detail="Not Found")
+    file_path = UI_DIST_DIR / catchall
+    if UI_DIST_DIR.exists() and file_path.exists() and file_path.is_file():
+        return FileResponse(file_path)
+    if UI_DIST_DIR.exists() and (UI_DIST_DIR / "index.html").exists():
+        return HTMLResponse(content=(UI_DIST_DIR / "index.html").read_text())
+    raise HTTPException(status_code=404, detail="Not Found")
 
 # Main entry point
 if __name__ == "__main__":
