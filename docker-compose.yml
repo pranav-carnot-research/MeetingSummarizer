@@ -13,8 +13,9 @@ services:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
-      - WORKERS=4
+      - WORKERS=1
       - LLM_PROVIDER=groq
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     deploy:
       resources:
         reservations:

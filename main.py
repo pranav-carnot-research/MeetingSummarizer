@@ -81,7 +81,7 @@ class TextRequest(BaseModel):
 
 class ProcessRequest(BaseModel):
     transcript: str
-    participants: List[str]
+    participants: Union[List[str], str] = ["Speaker 0", "Speaker 1"]
     language: Optional[str] = None
     is_long_recording: bool = False
     additional_context: Optional[str] = None  # New field for meeting context
@@ -472,13 +472,18 @@ async def summarize(background_tasks: BackgroundTasks, request: ProcessRequest):
 def summarize_background(
     job_id: str, 
     transcript: str, 
-    participants: List[str], 
+    participants: Union[List[str], str], 
     language: Optional[str],
     is_long_recording: bool,
     additional_context: Optional[str] = None
 ):
     """Generate meeting summary in the background and update job status"""
     try:
+        if isinstance(participants, str):
+            participants = [p.strip() for p in participants.split(",") if p.strip()]
+        elif not isinstance(participants, list):
+            participants = ["Speaker 0", "Speaker 1"]
+
         update_job_status(job_id, JobStatus.PROCESSING, "Analyzing transcript", progress=10)
         
         # CRITICAL: Fix language handling

@@ -15,7 +15,7 @@ class Settings(BaseSettings):
 
     # Groq Configuration
     GROQ_API_KEY: Optional[str] = None
-    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_MODEL: str = "groq/compound-mini"
 
     # LLM Configuration
     LLM_PROVIDER: str = "ollama"  # Options: "openai", "ollama", "groq"
